@@ -1,0 +1,5 @@
+= kots-oauth2
+
+OAuth 2.0 authorization server and client: a pure core on Cats, tapir endpoint descriptions, and an http4s backend. Cross-built for Scala 2.13 and 3.
+
+License: LGPL-3.0-or-later
