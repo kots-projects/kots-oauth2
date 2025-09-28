@@ -243,4 +243,35 @@ class DevelopmentSpec extends CatsEffectSuite {
       }
     }
   }
+
+  test("two seeded sessions of one person draw on one entry budget") {
+    val codes = List("BCDF-GHJK", "BCDF-GHJL", "BCDF-GHJM", "BCDF-GHJN", "BCDF-GHJP", "BCDF-GHJQ")
+    Development.assembled[IO]().flatMap { case (served, _) =>
+      def entry(cookie: String, code: String): IO[(Status, String)] =
+        served
+          .run(
+            Request[IO](
+              method = Method.POST,
+              uri = Uri.unsafeFromString(s"http://localhost/${kots.oauth2.http.Endpoints.VerificationPath}")
+            ).withEntity(UrlForm("user_code" -> code))
+              .addCookie(kots.oauth2.http.Endpoints.SessionCookie, cookie)
+          )
+          .value
+          .flatMap(
+            _.fold(IO.pure(Status.NotFound -> ""))(answer =>
+              answer.bodyText.compile.string.map(answer.status -> _)
+            )
+          )
+      for {
+        first <- codes.traverse(entry(Development.SeedSession, _))
+        second <- codes.traverse(entry(Development.SecondSeedSession, _))
+      } yield {
+        assert(!second.head._2.contains("sign in first"), second.head._2)
+        assert(
+          (first ++ second).exists(_._1 == Status.TooManyRequests),
+          (first ++ second).map(_._1).toString
+        )
+      }
+    }
+  }
 }
