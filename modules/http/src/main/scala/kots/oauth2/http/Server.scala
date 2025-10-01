@@ -25,7 +25,7 @@ trait AuthorizeLogic[F[_]] {
   def apply(
       session: Option[String],
       parameters: Map[String, String]
-  ): F[Either[OAuth2Error, AuthorizationRedirect]]
+  ): F[AuthorizationAnswer]
 }
 
 trait TokenLogic[F[_]] {
@@ -90,7 +90,7 @@ object Server {
   def authorize[F[_]: Functor](logic: AuthorizeLogic[F]): ServerEndpoint[Any, F] =
     ServerEndpoint.public[(Option[String], Map[String, String]), OAuth2Error, String, Any, F](
       Endpoints.authorize,
-      _ => input => logic(input._1, input._2).map(_.map(_.location))
+      _ => input => logic(input._1, input._2).map(Server.located)
     )
 
   def verification[F[_]](logic: VerificationLogic[F]): ServerEndpoint[Any, F] =
@@ -206,4 +206,11 @@ object Server {
             ]
           }
     )
+
+  private def located(answer: AuthorizationAnswer): Either[OAuth2Error, String] =
+    answer match {
+      case AuthorizationAnswer.Redirected(redirect)     => Right(redirect.location)
+      case AuthorizationAnswer.SignInRequired(fallback) => Right(fallback.location)
+      case AuthorizationAnswer.Refused(error)           => Left(error)
+    }
 }
