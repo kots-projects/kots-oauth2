@@ -5,6 +5,7 @@ import cats.Functor
 import cats.syntax.functor._
 
 import kots.oauth2.core.AuthorizationServerMetadata
+import kots.oauth2.core.EndpointUri
 import kots.oauth2.core.IntrospectionResponse
 import kots.oauth2.core.OAuth2Error
 import kots.oauth2.core.ProtectedResourceMetadata
@@ -87,10 +88,13 @@ trait ReadinessLogic[F[_]] {
 
 object Server {
 
-  def authorize[F[_]: Functor](logic: AuthorizeLogic[F]): ServerEndpoint[Any, F] =
+  def authorize[F[_]: Functor](
+      logic: AuthorizeLogic[F],
+      signIn: Option[EndpointUri] = None
+  ): ServerEndpoint[Any, F] =
     ServerEndpoint.public[(Option[String], Map[String, String]), OAuth2Error, String, Any, F](
       Endpoints.authorize,
-      _ => input => logic(input._1, input._2).map(Server.located)
+      _ => input => logic(input._1, input._2).map(Server.located(signIn))
     )
 
   def verification[F[_]](logic: VerificationLogic[F]): ServerEndpoint[Any, F] =
@@ -207,10 +211,10 @@ object Server {
           }
     )
 
-  private def located(answer: AuthorizationAnswer): Either[OAuth2Error, String] =
+  private def located(signIn: Option[EndpointUri])(answer: AuthorizationAnswer): Either[OAuth2Error, String] =
     answer match {
       case AuthorizationAnswer.Redirected(redirect)     => Right(redirect.location)
-      case AuthorizationAnswer.SignInRequired(fallback) => Right(fallback.location)
+      case AuthorizationAnswer.SignInRequired(fallback) => Right(signIn.fold(fallback.location)(_.value))
       case AuthorizationAnswer.Refused(fault)           => Left(fault.error)
     }
 }

@@ -6,6 +6,7 @@ import cats.effect.kernel.Resource
 import cats.syntax.all._
 import com.comcast.ip4s.Port
 
+import kots.oauth2.core.EndpointUri
 import kots.oauth2.core.Issuer
 import kots.oauth2.server.AssertionIssuers
 import org.http4s.ember.client.EmberClientBuilder
@@ -18,6 +19,8 @@ object DevServer extends IOApp.Simple {
 
   val IssuerVariable: String = "OAUTH2_ISSUER"
 
+  val SignInVariable: String = "OAUTH2_SIGN_IN"
+
   def run: IO[Unit] = serve(DefaultPort)
 
   def serve(port: Int): IO[Unit] =
@@ -25,13 +28,20 @@ object DevServer extends IOApp.Simple {
       .fromInt(port)
       .fold(IO.raiseError[Unit](new IllegalStateException("no port")))(bound =>
         IO(sys.env.get(IssuerVariable)).flatMap { configured =>
-          served(configured, port) match {
-            case Left(raw)    => IO.raiseError(new IllegalStateException(s"not an issuer: $raw"))
-            case Right(value) =>
-              assertionIssuers.use(issuers => Development.server[IO](bound, issuers, value).useForever)
+          (served(configured, port), signIn(sys.env.get(SignInVariable))) match {
+            case (Left(raw), _) => IO.raiseError(new IllegalStateException(s"not an issuer: $raw"))
+            case (_, Left(raw)) => IO.raiseError(new IllegalStateException(s"not an address: $raw"))
+            case (Right(value), Right(where)) =>
+              assertionIssuers.use(issuers => Development.server[IO](bound, issuers, value, where).useForever)
           }
         }
       )
+
+  def signIn(configured: Option[String]): Either[String, Option[EndpointUri]] =
+    configured.map(_.trim).filter(_.nonEmpty) match {
+      case None      => Right(None)
+      case Some(raw) => EndpointUri.from(raw).bimap(_ => raw, uri => Some(uri))
+    }
 
   def served(configured: Option[String], port: Int): Either[String, String] = {
     val candidate = configured.map(_.trim).filter(_.nonEmpty).getOrElse(s"http://localhost:$port")
