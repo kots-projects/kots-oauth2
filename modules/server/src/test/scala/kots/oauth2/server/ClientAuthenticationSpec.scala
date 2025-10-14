@@ -419,4 +419,27 @@ class ClientAuthenticationSpec extends CatsEffectSuite {
       refused <- authentication.authenticate(mtls(Some(presented(Fakes.ClientCertificatePem))))
     } yield assertEquals(rejection(refused), OAuth2Error.InvalidClient())
   }
+
+  test("a caller bringing a secret in the header and another in the body is refused") {
+    for {
+      authentication <- service(List(client()))
+      both <- authentication.authenticate(
+        input(basic(id.value, "s3cret"), Map("client_secret" -> "s3cret"))
+      )
+      wrongSecond <- authentication.authenticate(
+        input(basic(id.value, "s3cret"), Map("client_secret" -> "wrong"))
+      )
+      header <- authentication.authenticate(input(basic(id.value, "s3cret")))
+    } yield {
+      assertEquals(
+        rejection(both),
+        OAuth2Error.InvalidRequest(Some("more than one authentication method")): OAuth2Error
+      )
+      assertEquals(
+        rejection(wrongSecond),
+        OAuth2Error.InvalidRequest(Some("more than one authentication method")): OAuth2Error
+      )
+      assertEquals(header.map(_.id), Right(id))
+    }
+  }
 }

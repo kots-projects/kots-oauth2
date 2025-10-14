@@ -45,6 +45,12 @@ final class RegisteredClientAuthentication[F[_]: Monad](
     }
 
   private def resolved(input: ClientAuthInput): F[Either[OAuth2Error, Client]] =
+    if (RegisteredClientAuthentication.crowded(input))
+      RegisteredClientAuthentication.tooMany.asLeft[Client].pure[F]
+    else
+      presented(input)
+
+  private def presented(input: ClientAuthInput): F[Either[OAuth2Error, Client]] =
     input.assertion match {
       case Some(raw) if input.basic.isEmpty && input.clientSecret.isEmpty => asserted(raw, input)
       case Some(_) => RegisteredClientAuthentication.rejected.asLeft.pure[F]
@@ -197,6 +203,12 @@ final class RegisteredClientAuthentication[F[_]: Monad](
 }
 
 object RegisteredClientAuthentication {
+
+  val tooMany: OAuth2Error =
+    OAuth2Error.InvalidRequest(Some("more than one authentication method"))
+
+  def crowded(input: ClientAuthInput): Boolean =
+    input.basic.isDefined && input.clientSecret.isDefined
 
   final case class Assertions[F[_]](audience: Issuer, replays: ReplayStore[F], clock: Clock[F])
 
