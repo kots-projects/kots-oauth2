@@ -52,9 +52,8 @@ final class RegisteredClientAuthentication[F[_]: Monad](
 
   private def presented(input: ClientAuthInput): F[Either[OAuth2Error, Client]] =
     input.assertion match {
-      case Some(raw) if input.basic.isEmpty && input.clientSecret.isEmpty => asserted(raw, input)
-      case Some(_) => RegisteredClientAuthentication.rejected.asLeft.pure[F]
-      case None    =>
+      case Some(raw) => asserted(raw, input)
+      case None      =>
         input.subject match {
           case None     => RegisteredClientAuthentication.rejected.asLeft.pure[F]
           case Some(id) =>
@@ -208,7 +207,7 @@ object RegisteredClientAuthentication {
     OAuth2Error.InvalidRequest(Some("more than one authentication method"))
 
   def crowded(input: ClientAuthInput): Boolean =
-    input.basic.isDefined && input.clientSecret.isDefined
+    List(input.basic, input.clientSecret, input.assertion).count(_.isDefined) > 1
 
   final case class Assertions[F[_]](audience: Issuer, replays: ReplayStore[F], clock: Clock[F])
 
