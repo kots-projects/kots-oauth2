@@ -82,6 +82,8 @@ object Development {
 
   val SeedSession: String = "dev-session"
 
+  val SecondSeedSession: String = "dev-session-2"
+
   val SeedFormSecret: String = "dev-form-secret"
 
   val SeedKeyId: String = "dev-key"
@@ -170,6 +172,7 @@ object Development {
       _ <- consents.grant(ConsentRecord(clientId, subject, scopes))
       login <- SessionLogin.create[F]
       _ <- login.login(unsafe(SessionId.from(SeedSession)), subject)
+      _ <- login.login(unsafe(SessionId.from(SecondSeedSession)), subject)
       audit <- InMemoryAuditLog.create[F]
       limiter <- InMemoryRateLimiter.create[F](clock, 1000, 60)
       entries <- InMemoryRateLimiter.create[F](clock, EntryAttempts, EntryWindow)
