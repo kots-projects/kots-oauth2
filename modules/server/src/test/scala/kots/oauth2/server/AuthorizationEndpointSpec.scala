@@ -15,6 +15,7 @@ import kots.oauth2.core.ParseFailure
 import kots.oauth2.core.RedirectUri
 import kots.oauth2.core.Scopes
 import kots.oauth2.core.Subject
+import kots.oauth2.http.AuthorizationAnswer
 import kots.oauth2.http.AuthorizationRedirect
 import kots.oauth2.http.Form
 import kots.oauth2.store.Client
@@ -97,6 +98,19 @@ class AuthorizationEndpointSpec extends CatsEffectSuite {
   private def query(redirect: AuthorizationRedirect): Map[String, String] =
     Form.parse(redirect.location.dropWhile(_ != '?').drop(1)).toOption.get
 
+  private def location(answer: AuthorizationAnswer): AuthorizationRedirect =
+    answer match {
+      case AuthorizationAnswer.Redirected(redirect)     => redirect
+      case AuthorizationAnswer.SignInRequired(fallback) => fallback
+      case AuthorizationAnswer.Refused(error)           => sys.error(error.code)
+    }
+
+  private def refusal(answer: AuthorizationAnswer): Option[String] =
+    answer match {
+      case AuthorizationAnswer.Refused(error) => Some(error.code)
+      case _                                  => None
+    }
+
   private def pushedSetup
       : IO[(AuthorizationEndpoint[IO], kots.oauth2.store.memory.InMemoryPushedRequestStore[IO])] = {
     val clock = new Clock[IO] {
@@ -138,10 +152,10 @@ class AuthorizationEndpointSpec extends CatsEffectSuite {
       answered <- endpoint(presented, Map("client_id" -> clientId.value, "request_uri" -> pushedUri.value))
       replayed <- endpoint(presented, Map("client_id" -> clientId.value, "request_uri" -> pushedUri.value))
     } yield {
-      val fields = query(answered.toOption.get)
+      val fields = query(location(answered))
       assert(fields("code").nonEmpty)
       assertEquals(fields.get("state"), Some("xyz"))
-      assertEquals(replayed.left.toOption.map(_.code), Some("invalid_request"))
+      assertEquals(refusal(replayed), Some("invalid_request"))
     }
   }
 
@@ -153,7 +167,7 @@ class AuthorizationEndpointSpec extends CatsEffectSuite {
         presented,
         Map("client_id" -> clientId.value, "request_uri" -> pushedUri.value, "scope" -> "read")
       )
-    } yield assertEquals(answered.left.toOption.map(_.code), Some("invalid_request"))
+    } yield assertEquals(refusal(answered), Some("invalid_request"))
   }
 
   test("a request uri of another client is refused") {
@@ -165,7 +179,7 @@ class AuthorizationEndpointSpec extends CatsEffectSuite {
           .PushedRequest(pushedUri, unsafe(ClientId.from("client-2")), params, Start.plusSeconds(60L))
       )
       answered <- endpoint(presented, Map("client_id" -> clientId.value, "request_uri" -> pushedUri.value))
-    } yield assertEquals(answered.left.toOption.map(_.code), Some("invalid_request"))
+    } yield assertEquals(refusal(answered), Some("invalid_request"))
   }
 
   test("an authorized request is redirected back with the code and the state") {
@@ -173,7 +187,7 @@ class AuthorizationEndpointSpec extends CatsEffectSuite {
       endpoint <- setup()
       answered <- endpoint(presented, params)
     } yield {
-      val redirect = answered.toOption.get
+      val redirect = location(answered)
       assert(redirect.location.startsWith(callback.value + "?"))
       assert(query(redirect)("code").nonEmpty)
       assertEquals(query(redirect).get("state"), Some("xyz"))
@@ -187,7 +201,7 @@ class AuthorizationEndpointSpec extends CatsEffectSuite {
       endpoint <- setup(authenticated = false)
       answered <- endpoint(presented, params)
     } yield {
-      val fields = query(answered.toOption.get)
+      val fields = query(location(answered))
       assertEquals(fields.get("error"), Some("access_denied"))
       assertEquals(fields.get("state"), Some("xyz"))
       assertEquals(fields.get("iss"), Some(issuer.value))
@@ -199,21 +213,21 @@ class AuthorizationEndpointSpec extends CatsEffectSuite {
     for {
       endpoint <- setup(consented = false)
       answered <- endpoint(presented, params)
-    } yield assertEquals(query(answered.toOption.get).get("error"), Some("access_denied"))
+    } yield assertEquals(query(location(answered)).get("error"), Some("access_denied"))
   }
 
   test("an unknown client is answered directly with an error") {
     for {
       endpoint <- setup()
       answered <- endpoint(presented, params.updated("client_id", "client-2"))
-    } yield assertEquals(answered.left.toOption.map(_.code), Some("invalid_request"))
+    } yield assertEquals(refusal(answered), Some("invalid_request"))
   }
 
   test("an unregistered redirect uri is never redirected to") {
     for {
       endpoint <- setup()
       answered <- endpoint(presented, params.updated("redirect_uri", other.value))
-    } yield assertEquals(answered.left.toOption.map(_.code), Some("invalid_request"))
+    } yield assertEquals(refusal(answered), Some("invalid_request"))
   }
 
   test("a missing code challenge is redirected back as an invalid request") {
@@ -221,9 +235,22 @@ class AuthorizationEndpointSpec extends CatsEffectSuite {
       endpoint <- setup()
       answered <- endpoint(presented, params - "code_challenge" - "code_challenge_method")
     } yield {
-      val fields = query(answered.toOption.get)
+      val fields = query(location(answered))
       assertEquals(fields.get("error"), Some("invalid_request"))
       assertEquals(fields.get("state"), Some("xyz"))
+    }
+  }
+
+  test("the three destinations are told apart by the answer") {
+    for {
+      endpoint <- setup()
+      granted <- endpoint(presented, params)
+      anonymous <- setup(authenticated = false).flatMap(_(presented, params))
+      unknown <- endpoint(presented, params.updated("client_id", "client-2"))
+    } yield {
+      assert(granted.isInstanceOf[AuthorizationAnswer.Redirected], granted.toString)
+      assert(anonymous.isInstanceOf[AuthorizationAnswer.SignInRequired], anonymous.toString)
+      assert(unknown.isInstanceOf[AuthorizationAnswer.Refused], unknown.toString)
     }
   }
 }

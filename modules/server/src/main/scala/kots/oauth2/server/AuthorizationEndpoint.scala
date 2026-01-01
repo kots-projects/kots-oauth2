@@ -11,6 +11,7 @@ import kots.oauth2.core.OAuth2Error
 import kots.oauth2.core.RedirectUri
 import kots.oauth2.core.RequestUri
 import kots.oauth2.core.State
+import kots.oauth2.http.AuthorizationAnswer
 import kots.oauth2.http.AuthorizationRedirect
 import kots.oauth2.http.AuthorizeLogic
 import kots.oauth2.http.Form
@@ -25,13 +26,16 @@ final class AuthorizationEndpoint[F[_]: Monad](
     pushed: Option[PushedRequestStore[F]] = None
 ) extends AuthorizeLogic[F] {
 
-  private def invalid(reason: String): F[Either[OAuth2Error, AuthorizationRedirect]] =
-    (OAuth2Error.InvalidRequest(Some(reason)): OAuth2Error).asLeft[AuthorizationRedirect].pure[F]
+  private def refused(error: OAuth2Error): F[AuthorizationAnswer] =
+    (AuthorizationAnswer.Refused(error): AuthorizationAnswer).pure[F]
+
+  private def invalid(reason: String): F[AuthorizationAnswer] =
+    refused(OAuth2Error.InvalidRequest(Some(reason)))
 
   def apply(
       session: Option[String],
       parameters: Map[String, String]
-  ): F[Either[OAuth2Error, AuthorizationRedirect]] =
+  ): F[AuthorizationAnswer] =
     parameters.get("request_uri") match {
       case None      => handle(presented(session), parameters, Monad[F].pure(true))
       case Some(raw) => resolve(presented(session), raw, parameters)
@@ -44,7 +48,7 @@ final class AuthorizationEndpoint[F[_]: Monad](
       session: Option[SessionId],
       raw: String,
       parameters: Map[String, String]
-  ): F[Either[OAuth2Error, AuthorizationRedirect]] =
+  ): F[AuthorizationAnswer] =
     if ((parameters.keySet -- AuthorizationEndpoint.PushedParameters).nonEmpty)
       invalid("request_uri stands alone")
     else
@@ -55,7 +59,7 @@ final class AuthorizationEndpoint[F[_]: Monad](
           .map(_ => OAuth2Error.InvalidRequest(Some("not a request_uri")): OAuth2Error),
         pushed
       ) match {
-        case (Left(error), _) => error.asLeft.pure[F]
+        case (Left(error), _) => refused(error)
         case (_, None)        =>
           invalid("request_uri is not supported")
         case (Right(uri), Some(store)) =>
@@ -71,32 +75,36 @@ final class AuthorizationEndpoint[F[_]: Monad](
       session: Option[SessionId],
       parameters: Map[String, String],
       spend: F[Boolean]
-  ): F[Either[OAuth2Error, AuthorizationRedirect]] =
+  ): F[AuthorizationAnswer] =
     AuthorizationRequest.from(parameters).toEither match {
-      case Left(failures) => failures.head.asLeft.pure[F]
+      case Left(failures) => refused(failures.head)
       case Right(request) =>
         clients.find(request.clientId).flatMap {
           case None =>
             invalid("client is not registered")
           case Some(client) =>
             service.target(client, request.redirectUri) match {
-              case Left(error)   => error.asLeft.pure[F]
+              case Left(error)   => refused(error)
               case Right(target) =>
                 login.subject(session).flatMap {
                   case None =>
-                    AuthorizationEndpoint
-                      .refused(target, OAuth2Error.AccessDenied(), request.state, issuer)
-                      .asRight
-                      .pure[F]
+                    (AuthorizationAnswer.SignInRequired(
+                      AuthorizationEndpoint
+                        .denied(target, OAuth2Error.AccessDenied(), request.state, issuer)
+                    ): AuthorizationAnswer).pure[F]
                   case Some(subject) =>
                     spend.flatMap {
                       case false => invalid("unknown request_uri")
                       case true  =>
                         service.issue(request, client, subject, AuthorizationDetails.empty).map {
                           case Right(code) =>
-                            Right(AuthorizationEndpoint.granted(target, code, request.state, issuer))
+                            AuthorizationAnswer.Redirected(
+                              AuthorizationEndpoint.granted(target, code, request.state, issuer)
+                            )
                           case Left(error) =>
-                            Right(AuthorizationEndpoint.refused(target, error, request.state, issuer))
+                            AuthorizationAnswer.Redirected(
+                              AuthorizationEndpoint.denied(target, error, request.state, issuer)
+                            )
                         }
                     }
                 }
@@ -104,7 +112,6 @@ final class AuthorizationEndpoint[F[_]: Monad](
         }
     }
 }
-
 object AuthorizationEndpoint {
 
   val IssParameter: String = "iss"
@@ -122,7 +129,7 @@ object AuthorizationEndpoint {
       Map("code" -> code.value, IssParameter -> issuer.value, "state" -> state.value)
     )
 
-  def refused(
+  def denied(
       target: RedirectUri,
       error: OAuth2Error,
       state: State,
