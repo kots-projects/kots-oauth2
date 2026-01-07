@@ -211,6 +211,6 @@ object Server {
     answer match {
       case AuthorizationAnswer.Redirected(redirect)     => Right(redirect.location)
       case AuthorizationAnswer.SignInRequired(fallback) => Right(fallback.location)
-      case AuthorizationAnswer.Refused(error)           => Left(error)
+      case AuthorizationAnswer.Refused(fault)           => Left(fault.error)
     }
 }

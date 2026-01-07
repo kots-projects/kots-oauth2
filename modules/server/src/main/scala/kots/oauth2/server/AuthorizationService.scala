@@ -7,6 +7,7 @@ import cats.syntax.all._
 import kots.oauth2.core.AuthorizationCode
 import kots.oauth2.core.AuthorizationDetails
 import kots.oauth2.core.AuthorizationRequest
+import kots.oauth2.core.ClientFault
 import kots.oauth2.core.ClientId
 import kots.oauth2.core.Clock
 import kots.oauth2.core.CodeChallengeMethod
@@ -48,8 +49,13 @@ final class AuthorizationService[F[_]: Monad](
       }
     )
 
-  def target(client: Client, requested: Option[RedirectUri]): Either[OAuth2Error, RedirectUri] =
-    redirect(client, requested).toEither.leftMap(_.head)
+  def target(client: Client, requested: Option[RedirectUri]): Either[ClientFault, RedirectUri] =
+    (requested, client.redirectUris.toList) match {
+      case (Some(uri), _) if client.allowsRedirect(uri) => Right(uri)
+      case (Some(_), _)                                 => Left(ClientFault.RedirectNotRegistered)
+      case (None, single :: Nil)                        => Right(single)
+      case (None, _)                                    => Left(ClientFault.RedirectMissing)
+    }
 
   private def validate(
       request: AuthorizationRequest,
@@ -61,13 +67,7 @@ final class AuthorizationService[F[_]: Monad](
       client: Client,
       requested: Option[RedirectUri]
   ): ValidatedNec[OAuth2Error, RedirectUri] =
-    (requested, client.redirectUris.toList) match {
-      case (Some(uri), _) if client.allowsRedirect(uri) => uri.validNec
-      case (Some(_), _)                                 =>
-        OAuth2Error.InvalidRequest(Some("redirect_uri is not registered")).invalidNec
-      case (None, single :: Nil) => single.validNec
-      case (None, _)             => OAuth2Error.InvalidRequest(Some("redirect_uri is required")).invalidNec
-    }
+    target(client, requested).leftMap(_.error).toValidatedNec
 
   private def scopes(client: Client, requested: Scopes): ValidatedNec[OAuth2Error, Scopes] =
     Either

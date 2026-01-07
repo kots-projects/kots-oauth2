@@ -7,6 +7,7 @@ import kots.oauth2.core.ClientAuthMethod
 import kots.oauth2.core.ClientId
 import kots.oauth2.core.ClientSecret
 import kots.oauth2.core.ClientSecretHash
+import kots.oauth2.core.ClientFault
 import kots.oauth2.core.Clock
 import kots.oauth2.core.CodeChallenge
 import kots.oauth2.core.Entropy
@@ -102,13 +103,19 @@ class AuthorizationEndpointSpec extends CatsEffectSuite {
     answer match {
       case AuthorizationAnswer.Redirected(redirect)     => redirect
       case AuthorizationAnswer.SignInRequired(fallback) => fallback
-      case AuthorizationAnswer.Refused(error)           => sys.error(error.code)
+      case AuthorizationAnswer.Refused(reason)          => sys.error(reason.error.code)
+    }
+
+  private def fault(answer: AuthorizationAnswer): Option[ClientFault] =
+    answer match {
+      case AuthorizationAnswer.Refused(reason) => Some(reason)
+      case _                                   => None
     }
 
   private def refusal(answer: AuthorizationAnswer): Option[String] =
     answer match {
-      case AuthorizationAnswer.Refused(error) => Some(error.code)
-      case _                                  => None
+      case AuthorizationAnswer.Refused(reason) => Some(reason.error.code)
+      case _                                   => None
     }
 
   private def pushedSetup
@@ -251,6 +258,40 @@ class AuthorizationEndpointSpec extends CatsEffectSuite {
       assert(granted.isInstanceOf[AuthorizationAnswer.Redirected], granted.toString)
       assert(anonymous.isInstanceOf[AuthorizationAnswer.SignInRequired], anonymous.toString)
       assert(unknown.isInstanceOf[AuthorizationAnswer.Refused], unknown.toString)
+    }
+  }
+
+  test("a refusal the client never sees names its reason and still reads the same") {
+    for {
+      endpoint <- setup()
+      unknownClient <- endpoint(presented, params.updated("client_id", "client-2"))
+      unregistered <- endpoint(presented, params.updated("redirect_uri", other.value))
+    } yield {
+      assertEquals(fault(unknownClient), Some(ClientFault.UnknownClient: ClientFault))
+      assertEquals(fault(unregistered), Some(ClientFault.RedirectNotRegistered: ClientFault))
+      assertEquals(
+        fault(unknownClient).map(_.error.body),
+        Some(Map("error" -> "invalid_request", "error_description" -> "client is not registered"))
+      )
+      assertEquals(
+        fault(unregistered).map(_.error.body),
+        Some(Map("error" -> "invalid_request", "error_description" -> "redirect_uri is not registered"))
+      )
+    }
+  }
+
+  test("a pushed request that is unknown or does not stand alone names which") {
+    for {
+      pair <- pushedSetup
+      (endpoint, _) = pair
+      unknown <- endpoint(presented, Map("client_id" -> clientId.value, "request_uri" -> pushedUri.value))
+      crowded <- endpoint(
+        presented,
+        Map("client_id" -> clientId.value, "request_uri" -> pushedUri.value, "state" -> "xyz")
+      )
+    } yield {
+      assertEquals(fault(unknown), Some(ClientFault.RequestUriUnknown: ClientFault))
+      assertEquals(fault(crowded), Some(ClientFault.RequestUriNotAlone: ClientFault))
     }
   }
 }

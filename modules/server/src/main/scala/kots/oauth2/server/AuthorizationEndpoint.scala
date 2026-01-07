@@ -6,6 +6,7 @@ import cats.Monad
 import kots.oauth2.core.AuthorizationCode
 import kots.oauth2.core.AuthorizationDetails
 import kots.oauth2.core.AuthorizationRequest
+import kots.oauth2.core.ClientFault
 import kots.oauth2.core.Issuer
 import kots.oauth2.core.OAuth2Error
 import kots.oauth2.core.RedirectUri
@@ -26,11 +27,8 @@ final class AuthorizationEndpoint[F[_]: Monad](
     pushed: Option[PushedRequestStore[F]] = None
 ) extends AuthorizeLogic[F] {
 
-  private def refused(error: OAuth2Error): F[AuthorizationAnswer] =
-    (AuthorizationAnswer.Refused(error): AuthorizationAnswer).pure[F]
-
-  private def invalid(reason: String): F[AuthorizationAnswer] =
-    refused(OAuth2Error.InvalidRequest(Some(reason)))
+  private def refused(fault: ClientFault): F[AuthorizationAnswer] =
+    (AuthorizationAnswer.Refused(fault): AuthorizationAnswer).pure[F]
 
   def apply(
       session: Option[String],
@@ -50,24 +48,21 @@ final class AuthorizationEndpoint[F[_]: Monad](
       parameters: Map[String, String]
   ): F[AuthorizationAnswer] =
     if ((parameters.keySet -- AuthorizationEndpoint.PushedParameters).nonEmpty)
-      invalid("request_uri stands alone")
+      refused(ClientFault.RequestUriNotAlone)
     else
       (
-        RequestUri
-          .from(raw)
-          .left
-          .map(_ => OAuth2Error.InvalidRequest(Some("not a request_uri")): OAuth2Error),
+        RequestUri.from(raw).left.map(_ => ClientFault.RequestUriMalformed: ClientFault),
         pushed
       ) match {
-        case (Left(error), _) => refused(error)
+        case (Left(fault), _) => refused(fault)
         case (_, None)        =>
-          invalid("request_uri is not supported")
+          refused(ClientFault.RequestUriUnsupported)
         case (Right(uri), Some(store)) =>
           store.peek(uri).flatMap {
             case Some(record) if parameters.get("client_id").contains(record.clientId.value) =>
               handle(session, record.parameters, store.consume(uri).map(_.isDefined))
             case _ =>
-              invalid("unknown request_uri")
+              refused(ClientFault.RequestUriUnknown)
           }
       }
 
@@ -77,14 +72,14 @@ final class AuthorizationEndpoint[F[_]: Monad](
       spend: F[Boolean]
   ): F[AuthorizationAnswer] =
     AuthorizationRequest.from(parameters).toEither match {
-      case Left(failures) => refused(failures.head)
+      case Left(failures) => refused(ClientFault.Malformed(failures.head))
       case Right(request) =>
         clients.find(request.clientId).flatMap {
           case None =>
-            invalid("client is not registered")
+            refused(ClientFault.UnknownClient)
           case Some(client) =>
             service.target(client, request.redirectUri) match {
-              case Left(error)   => refused(error)
+              case Left(fault)   => refused(fault)
               case Right(target) =>
                 login.subject(session).flatMap {
                   case None =>
@@ -94,7 +89,7 @@ final class AuthorizationEndpoint[F[_]: Monad](
                     ): AuthorizationAnswer).pure[F]
                   case Some(subject) =>
                     spend.flatMap {
-                      case false => invalid("unknown request_uri")
+                      case false => refused(ClientFault.RequestUriUnknown)
                       case true  =>
                         service.issue(request, client, subject, AuthorizationDetails.empty).map {
                           case Right(code) =>
