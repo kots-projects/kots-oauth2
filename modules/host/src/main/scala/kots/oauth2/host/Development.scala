@@ -115,7 +115,8 @@ object Development {
 
   def assembled[F[_]: Async](
       issuers: Option[AssertionIssuers[F]] = None,
-      served: String = SeedIssuer
+      served: String = SeedIssuer,
+      signIn: Option[EndpointUri] = None
   ): F[(HttpRoutes[F], List[F[Int]])] = {
     val clock = systemClock[F]
     def unsafe[A](parsed: Either[ParseFailure, A]): A =
@@ -207,7 +208,8 @@ object Development {
               new AuthorizationService[F](codes, consents, clock, entropy, LifetimePolicy.defaults),
               issuer,
               Some(pushed)
-            )
+            ),
+            signIn
           ),
           Server.par(
             new PushedAuthorizationEndpoint[F](
@@ -273,10 +275,11 @@ object Development {
   def server[F[_]: Async: fs2.io.net.Network](
       port: Port,
       issuers: Option[AssertionIssuers[F]] = None,
-      served: String = SeedIssuer
+      served: String = SeedIssuer,
+      signIn: Option[EndpointUri] = None
   ): Resource[F, org.http4s.server.Server] =
     Resource
-      .eval(assembled[F](issuers, served))
+      .eval(assembled[F](issuers, served, signIn))
       .flatMap { case (bound, sweeps) =>
         Resource.eval(InMemoryMetrics.create[F]).flatMap { metrics =>
           Resource.eval(secureEntropy[F]).flatMap { entropy =>

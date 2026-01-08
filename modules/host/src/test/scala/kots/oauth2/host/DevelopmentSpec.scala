@@ -274,4 +274,50 @@ class DevelopmentSpec extends CatsEffectSuite {
       }
     }
   }
+
+  test("a configured sign in address is where a person with no session is sent") {
+    val signIn = kots.oauth2.core.EndpointUri.from("https://dev.example/sign-in").toOption.get
+    def arrival(routes: org.http4s.HttpRoutes[IO]): IO[(Status, String)] =
+      routes
+        .run(
+          Request[IO](
+            uri = Uri.unsafeFromString(
+              "http://localhost/authorize?response_type=code" +
+                s"&client_id=${Development.SeedClientId}" +
+                "&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&scope=read&state=xyz" +
+                "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
+            )
+          )
+        )
+        .value
+        .map(
+          _.fold(Status.NotFound -> "")(answer =>
+            answer.status -> answer.headers.headers
+              .find(_.name.toString == "Location")
+              .map(_.value)
+              .getOrElse("")
+          )
+        )
+    for {
+      configured <- Development.assembled[IO](signIn = Some(signIn)).flatMap { case (routes, _) =>
+        arrival(routes)
+      }
+      bare <- Development.assembled[IO]().flatMap { case (routes, _) => arrival(routes) }
+    } yield {
+      assertEquals(configured._1, Status.Found)
+      assertEquals(configured._2, signIn.value)
+      assertEquals(bare._1, Status.Found)
+      assert(bare._2.contains("error=access_denied"), bare._2)
+    }
+  }
+
+  test("the sign in address is read from configuration and fails closed") {
+    assertEquals(DevServer.signIn(None), Right(None))
+    assertEquals(DevServer.signIn(Some("")), Right(None))
+    assertEquals(
+      DevServer.signIn(Some("https://dev.example/sign-in")).map(_.map(_.value)),
+      Right(Some("https://dev.example/sign-in"))
+    )
+    assert(DevServer.signIn(Some("not an address")).isLeft)
+  }
 }
