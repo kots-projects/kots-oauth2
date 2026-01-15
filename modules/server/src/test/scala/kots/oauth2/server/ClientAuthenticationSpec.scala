@@ -185,7 +185,10 @@ class ClientAuthenticationSpec extends CatsEffectSuite {
           Some(unsafe(kots.oauth2.core.ClientAssertion.from(assertion())))
         )
       )
-    } yield assertEquals(rejection(result), OAuth2Error.InvalidClient())
+    } yield assertEquals(
+      rejection(result),
+      OAuth2Error.InvalidRequest(Some("more than one authentication method")): OAuth2Error
+    )
   }
 
   test("an assertion without a configured verifier is refused") {
