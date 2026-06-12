@@ -51,6 +51,25 @@ jobs:
           java-version: "21"
           cache: sbt
       - uses: sbt/setup-sbt@v1
+      - name: Drop the previous snapshots
+        if: github.ref_type == 'branch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          org=$GITHUB_REPOSITORY_OWNER
+          repo=${GITHUB_REPOSITORY#*/}
+          gh api --paginate "/orgs/$org/packages?package_type=maven" -q ".[] | select(.repository.name == \"$repo\") | .name" |
+          while read -r pkg; do
+            versions=$(gh api --paginate "/orgs/$org/packages/maven/$pkg/versions" -q '.[] | "\(.id) \(.name)"')
+            if [ -z "$(printf '%s\n' "$versions" | grep -v -- '-SNAPSHOT$')" ]; then
+              gh api -X DELETE "/orgs/$org/packages/maven/$pkg"
+            else
+              printf '%s\n' "$versions" | grep -- '-SNAPSHOT$' | while read -r id name; do
+                gh api -X DELETE "/orgs/$org/packages/maven/$pkg/versions/$id"
+              done
+            fi
+          done
       - name: Publish
         env:
           REGISTRY_TOKEN: ${{ secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
