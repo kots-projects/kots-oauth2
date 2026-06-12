@@ -53,7 +53,7 @@ lazy val testSettings = Seq(
 def module(id: String): Project =
   Project(id, file(s"modules/$id"))
     .settings(commonSettings, testSettings)
-    .settings(name := s"oauth2-$id")
+    .settings(name := s"kots-oauth2-$id")
 
 lazy val core =
   module("core")
@@ -107,7 +107,7 @@ lazy val host = module("host")
   .settings(
     Compile / run / mainClass := Some("kots.oauth2.host.DevServer"),
     assembly / mainClass := Some("kots.oauth2.host.DevServer"),
-    assembly / assemblyJarName := "oauth2-host.jar",
+    assembly / assemblyJarName := "kots-oauth2-host.jar",
     assembly / assemblyMergeStrategy := {
       case PathList("META-INF", "versions", _ @_*) => MergeStrategy.first
       case PathList("META-INF", remainder @ _*) if remainder.lastOption.exists(_ == "module-info.class") =>
@@ -129,7 +129,7 @@ lazy val example = Project("example", file("example"))
   .dependsOn(client, http, core, jose, host)
   .settings(commonSettings, testSettings)
   .settings(
-    name := "oauth2-example",
+    name := "kots-oauth2-example",
     publish / skip := true,
     mimaPreviousArtifacts := Set.empty,
     coverageMinimumStmtTotal := 0,
