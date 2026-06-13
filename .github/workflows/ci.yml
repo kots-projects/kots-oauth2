@@ -76,7 +76,7 @@ jobs:
           RELEASE: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           if [ -n "$RELEASE" ]; then
-            sbt -batch coverageOff "set every version := \"${RELEASE#v}\"" +publish
+            sbt -batch "set every coverageEnabled := false" "set every version := \"${RELEASE#v}\"" +publish
           else
-            sbt -batch coverageOff +publish
+            sbt -batch "set every coverageEnabled := false" +publish
           fi
