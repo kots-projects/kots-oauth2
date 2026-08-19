@@ -61,6 +61,7 @@ class HydraSpec extends CatsEffectSuite {
           }
           for {
             _ <- Containers.awaitHttp(transport, s"http://localhost:$AdminPort/health/ready")
+            _ <- Containers.awaitHttp(transport, s"http://localhost:$PublicPort/health/ready")
             created <- transport.status(
               Request[IO](
                 method = Method.POST,
