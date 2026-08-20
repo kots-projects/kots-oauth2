@@ -29,11 +29,10 @@ final class BearerGuard[F[_]: Monad](
       required: Scopes,
       acr: Option[Acr] = None
   ): F[Either[BearerGuard.Challenge, JwtClaims]] =
-    authorization.filter(_.startsWith(BearerGuard.Scheme)) match {
-      case None =>
-        BearerGuard.missing.asLeft[JwtClaims].pure[F]
-      case Some(header) =>
-        val token = header.drop(BearerGuard.Scheme.length)
+    BearerGuard.token(authorization) match {
+      case Left(challenge) =>
+        challenge.asLeft[JwtClaims].pure[F]
+      case Right(token) =>
         keys.flatMap {
           case Left(_) =>
             BearerGuard.invalidToken.asLeft[JwtClaims].pure[F]
@@ -65,7 +64,17 @@ object BearerGuard {
 
   final case class Challenge(status: Int, header: String)
 
+  /** The token of a bearer authorization, its scheme read regardless of case. */
+  def token(authorization: Option[String]): Either[Challenge, String] =
+    authorization.map(_.trim.split("\\s+").toList).getOrElse(Nil) match {
+      case scheme :: token :: Nil if scheme.equalsIgnoreCase(Scheme.trim) => Right(token)
+      case scheme :: _ :: _ if scheme.equalsIgnoreCase(Scheme.trim)       => Left(invalidRequest)
+      case _                                                              => Left(missing)
+    }
+
   val missing: Challenge = Challenge(401, s"""Bearer realm="$Realm"""")
+
+  val invalidRequest: Challenge = Challenge(400, s"""Bearer realm="$Realm", error="invalid_request"""")
 
   val invalidToken: Challenge = Challenge(401, s"""Bearer realm="$Realm", error="invalid_token"""")
 
