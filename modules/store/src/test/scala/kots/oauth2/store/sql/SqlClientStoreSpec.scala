@@ -9,6 +9,7 @@ import kots.oauth2.core.ClientAuthMethod
 import kots.oauth2.core.ClientId
 import kots.oauth2.core.ClientSecret
 import kots.oauth2.core.ClientSecretHash
+import kots.oauth2.core.GrantType
 import kots.oauth2.core.ParseFailure
 import kots.oauth2.core.RedirectUri
 import kots.oauth2.core.RegistrationToken
@@ -88,5 +89,29 @@ class SqlClientStoreSpec extends CatsEffectSuite {
       found <- store.find(id)
       _ <- store.delete(unsafe(ClientId.from("absent")))
     } yield assertEquals(found, None)
+  }
+
+  test("the grant types a client is allowed survive a save, and a row without them allows every grant") {
+    val name = s"clients-${databases.incrementAndGet()}"
+    val connect = IO.blocking {
+      Class.forName("org.h2.Driver")
+      DriverManager.getConnection(s"jdbc:h2:mem:$name;DB_CLOSE_DELAY=-1")
+    }
+    val coded = Set[GrantType](GrantType.AuthorizationCode, GrantType.RefreshToken)
+    for {
+      store <- SqlClientStore.create[IO](connect).toOption.get
+      _ <- store.save(registered.copy(grantTypes = coded))
+      restricted <- store.find(id)
+      _ <- connect.flatMap(connection =>
+        IO.blocking {
+          try connection.createStatement().executeUpdate("UPDATE clients SET grant_types = NULL")
+          finally connection.close()
+        }
+      )
+      legacy <- store.find(id)
+    } yield {
+      assertEquals(restricted.map(_.grantTypes), Some(coded))
+      assertEquals(legacy.map(_.grantTypes), Some(GrantType.all.toSet))
+    }
   }
 }
