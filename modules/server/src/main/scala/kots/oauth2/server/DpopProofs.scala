@@ -5,6 +5,7 @@ import java.time.Instant
 import cats.syntax.all._
 import cats.Monad
 
+import kots.oauth2.core.AccessToken
 import kots.oauth2.core.Clock
 import kots.oauth2.core.KeyThumbprint
 import kots.oauth2.core.OAuth2Error
@@ -17,13 +18,18 @@ final class DpopProofs[F[_]: Monad](
     nonce: Option[F[String]] = None
 ) {
 
-  def validate(compact: String, method: String, uri: String): F[Either[OAuth2Error, KeyThumbprint]] =
+  def validate(
+      compact: String,
+      method: String,
+      uri: String,
+      token: Option[AccessToken] = None
+  ): F[Either[OAuth2Error, KeyThumbprint]] =
     clock.instant.flatMap { now =>
       Dpop.verify(compact) match {
         case Left(failure) =>
           DpopProofs.invalid(failure.reason).asLeft[KeyThumbprint].pure[F]
         case Right(proof) =>
-          checked(proof, method, uri, now) match {
+          checked(proof, method, uri, now, token) match {
             case Left(error) => error.asLeft[KeyThumbprint].pure[F]
             case Right(())   =>
               demanded(proof.nonce).flatMap {
@@ -42,7 +48,8 @@ final class DpopProofs[F[_]: Monad](
       proof: Dpop.Proof,
       method: String,
       uri: String,
-      now: Instant
+      now: Instant,
+      token: Option[AccessToken]
   ): Either[OAuth2Error, Unit] =
     for {
       _ <- refuse(proof.method == method, "the proof is for another method")
@@ -52,6 +59,7 @@ final class DpopProofs[F[_]: Monad](
           !proof.issuedAt.isAfter(now.plusSeconds(DpopProofs.WindowSeconds)),
         "the proof is outside the freshness window"
       )
+      _ <- refuse(token.forall(held => proof.ath.contains(Dpop.ath(held))), "the proof is for another token")
     } yield ()
 
   private def demanded(carried: Option[String]): F[Either[OAuth2Error, Unit]] =

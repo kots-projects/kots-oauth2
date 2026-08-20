@@ -7,6 +7,7 @@ import cats.effect.kernel.Ref
 import cats.syntax.flatMap._
 import cats.syntax.functor._
 
+import kots.oauth2.core.AccessToken
 import kots.oauth2.core.Clock
 import kots.oauth2.core.Entropy
 import kots.oauth2.core.JwtId
@@ -24,14 +25,18 @@ final class DpopSigner[F[_]: Monad] private (
     nonces: Ref[F, Option[String]]
 ) {
 
-  def proof(method: String, uri: String): F[Either[ParseFailure, String]] =
+  def proof(
+      method: String,
+      uri: String,
+      token: Option[AccessToken] = None
+  ): F[Either[ParseFailure, String]] =
     for {
       raw <- entropy.bytes(DpopSigner.JtiEntropyBytes)
       now <- clock.instant
       nonce <- nonces.get
     } yield JwtId
       .from(Entropy.hex(raw))
-      .flatMap(jti => Dpop.prove(alg, key, jwk, jti, method, uri, now, nonce))
+      .flatMap(jti => Dpop.prove(alg, key, jwk, jti, method, uri, now, nonce, token))
 
   def learn(nonce: Option[String]): F[Unit] =
     nonce.fold(Monad[F].unit)(value => nonces.set(Some(value)))
