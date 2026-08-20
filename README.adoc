@@ -26,7 +26,8 @@ descriptions, and an http4s backend. Cross-built for Scala 2.13 and 3.
   throttling, replay and consent rules.
 
 | `client`
-| Token client, discovery, authorization URLs, device poller, refresher, DPoP signer, bearer guard.
+| Token client, discovery, authorization URLs, device poller, refresher, DPoP signer, bearer and
+  introspection guards.
 
 | `host`
 | Runnable server and the key and migration tools.
@@ -96,6 +97,20 @@ val kept      = refresher.flatMap(_.refresh(refreshToken))        // retries tra
 val waited = DevicePoller.await[IO](interval)                     // honours slow_down
 ----
 
+Guarding a resource, with a signed token or an opaque one:
+
+[source,scala]
+----
+val signed = new BearerGuard[IO](keys, issuer, clock)
+val opaque = new IntrospectionGuard[IO](http, uri("https://issuer.example/introspection"), resourceId, secret, clock)
+
+signed.verify(authorization, required)                           // scheme read regardless of case
+opaque.verifyRequest(authorization, form, required)              // token in the header or the form body
+----
+
+A refusal is a challenge for the `WWW-Authenticate` header; each error carries an
+`error_description`.
+
 == Server
 
 Endpoint logic is effect-polymorphic and served as tapir server endpoints:
@@ -114,6 +129,10 @@ val routes = Http4sServerInterpreter[IO]().toRoutes(
   )
 )
 ----
+
+A client may use only the grant types it was given; any other is refused as
+`unauthorized_client`. A dynamic registration names them in `grant_types`, the
+authorization code alone when it names none.
 
 == Examples
 
