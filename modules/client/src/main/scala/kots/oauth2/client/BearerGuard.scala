@@ -11,6 +11,7 @@ import kots.oauth2.core.Clock
 import kots.oauth2.core.Issuer
 import kots.oauth2.core.ParseFailure
 import kots.oauth2.core.Scopes
+import kots.oauth2.jose.Alg
 import kots.oauth2.jose.Jwks
 import kots.oauth2.jose.Jwt
 import kots.oauth2.jose.JwtClaims
@@ -77,6 +78,8 @@ object BearerGuard {
 
   val Scheme: String = "Bearer "
 
+  val ProofScheme: String = "DPoP "
+
   val Realm: String = "oauth2"
 
   final case class Challenge(status: Int, header: String)
@@ -106,20 +109,31 @@ object BearerGuard {
 
   val invalidToken: Challenge = invalid("the token is not valid")
 
-  val insufficientScope: Challenge = refusal(403, "insufficient_scope", "a required scope is not granted")
+  val insufficientScope: Challenge =
+    refusal(Scheme, 403, "insufficient_scope", "a required scope is not granted")
 
-  private def malformed(description: String): Challenge = refusal(400, "invalid_request", description)
+  private def malformed(description: String): Challenge =
+    refusal(Scheme, 400, "invalid_request", description)
 
   /** An invalid token challenge that says why. */
-  def invalid(description: String): Challenge = refusal(401, "invalid_token", description)
+  def invalid(description: String): Challenge = refusal(Scheme, 401, "invalid_token", description)
+
+  /** A challenge under the proof scheme, naming the algorithms taken. */
+  def proof(error: String, description: String): Challenge = {
+    val refused = refusal(ProofScheme, 401, error, description)
+    refused.copy(header =
+      refused.header + s""", algs="${Alg.allowed.map(_.value).toList.sorted.mkString(" ")}""""
+    )
+  }
 
   def stepUp(demanded: List[Acr]): Challenge = {
-    val refused = refusal(401, "insufficient_user_authentication", "a stronger authentication is required")
+    val refused =
+      refusal(Scheme, 401, "insufficient_user_authentication", "a stronger authentication is required")
     refused.copy(header = refused.header + s""", acr_values="${demanded.map(_.value).mkString(" ")}"""")
   }
 
-  private def refusal(status: Int, error: String, description: String): Challenge = {
+  private def refusal(scheme: String, status: Int, error: String, description: String): Challenge = {
     val said = description.map(c => if (c < 0x20 || c > 0x7e || c == '"' || c == '\\') ' ' else c)
-    Challenge(status, s"""Bearer realm="$Realm", error="$error", error_description="$said"""")
+    Challenge(status, s"""${scheme}realm="$Realm", error="$error", error_description="$said"""")
   }
 }

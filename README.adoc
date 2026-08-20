@@ -115,7 +115,12 @@ A resource in the server's own process reads the token store instead of asking o
 val held = new kots.oauth2.host.StoreGuard[IO](tokens, grants, clock, audience)
 
 held.verifyRequest(authorization, form, required)                // refuses a revoked grant
+held.verifyBound(authorization, Possession("GET", uri, proof, certificate), required)
 ----
+
+A token bound to a key or to a certificate is stored with that binding. The store guard takes a
+key bound token only under the `DPoP` scheme with a proof for the request and the token, and a
+certificate bound token only with its certificate.
 
 A refusal is a challenge for the `WWW-Authenticate` header; each error carries an
 `error_description`.
