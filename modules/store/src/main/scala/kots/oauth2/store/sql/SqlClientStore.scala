@@ -12,6 +12,7 @@ import kots.oauth2.core.ClientAuthMethod
 import kots.oauth2.core.ClientId
 import kots.oauth2.core.ClientSecret
 import kots.oauth2.core.ClientSecretHash
+import kots.oauth2.core.GrantType
 import kots.oauth2.core.RedirectUri
 import kots.oauth2.core.RegistrationTokenHash
 import kots.oauth2.core.Scopes
@@ -38,8 +39,8 @@ final class SqlClientStore[F[_]: Sync] private (connect: F[Connection])
       remove(connection, client.id)
       val insert = connection.prepareStatement(
         "INSERT INTO clients(client_id, redirect_uris, scopes, auth_method, secret_hash, " +
-          "registration_token_hash, secret, certificate_subject, certificate_thumbprint) " +
-          "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "registration_token_hash, secret, certificate_subject, certificate_thumbprint, grant_types) " +
+          "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       )
       try {
         insert.setString(1, client.id.value)
@@ -51,6 +52,7 @@ final class SqlClientStore[F[_]: Sync] private (connect: F[Connection])
         optional(insert, 7, client.secret.map(_.value))
         optional(insert, 8, client.certificateSubject.map(_.value))
         optional(insert, 9, client.certificateThumbprint.map(_.value))
+        insert.setString(10, client.grantTypes.map(_.value).toList.sorted.mkString(" "))
         insert.executeUpdate()
         ()
       } finally insert.close()
@@ -115,6 +117,14 @@ final class SqlClientStore[F[_]: Sync] private (connect: F[Connection])
       ),
       certificateThumbprint = Option(results.getString("certificate_thumbprint")).map(raw =>
         DetailRows.required(CertificateThumbprint.from(raw))
+      ),
+      grantTypes = Option(results.getString("grant_types")).fold(GrantType.all.toSet)(raw =>
+        raw
+          .split(' ')
+          .toList
+          .filter(_.nonEmpty)
+          .map(value => DetailRows.required(GrantType.from(value)))
+          .toSet
       )
     )
 
