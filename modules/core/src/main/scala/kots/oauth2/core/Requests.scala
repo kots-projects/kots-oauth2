@@ -83,7 +83,7 @@ object AuthorizationRequest {
     }
 }
 
-sealed abstract class TokenRequest
+sealed abstract class TokenRequest(val grantType: GrantType)
 
 object TokenRequest {
   final case class Code(
@@ -92,26 +92,26 @@ object TokenRequest {
       verifier: CodeVerifier,
       clientId: ClientId,
       resource: Option[ResourceIndicator] = None
-  ) extends TokenRequest
+  ) extends TokenRequest(GrantType.AuthorizationCode)
 
   final case class Refresh(
       refreshToken: RefreshToken,
       scope: Option[Scopes],
       clientId: ClientId,
       resource: Option[ResourceIndicator] = None
-  ) extends TokenRequest
+  ) extends TokenRequest(GrantType.RefreshToken)
 
   final case class ClientCredentials(
       scope: Option[Scopes],
       clientId: ClientId,
       resource: Option[ResourceIndicator] = None
-  ) extends TokenRequest
+  ) extends TokenRequest(GrantType.ClientCredentials)
 
   final case class Device(
       deviceCode: DeviceCode,
       clientId: ClientId,
       resource: Option[ResourceIndicator] = None
-  ) extends TokenRequest
+  ) extends TokenRequest(GrantType.DeviceCode)
 
   final case class Exchange(
       subjectToken: AccessToken,
@@ -120,7 +120,7 @@ object TokenRequest {
       resource: Option[ResourceIndicator],
       scope: Option[Scopes],
       clientId: ClientId
-  ) extends TokenRequest
+  ) extends TokenRequest(GrantType.TokenExchange)
 
   final case class IdJag(
       assertion: IdentityAssertion,
@@ -128,7 +128,7 @@ object TokenRequest {
       resource: Option[ResourceIndicator],
       clientId: ClientId,
       details: Option[AuthorizationDetailsDocument] = None
-  ) extends TokenRequest
+  ) extends TokenRequest(GrantType.IdJag)
 
   def from(params: Map[String, String]): ValidatedNec[OAuth2Error, TokenRequest] =
     Params

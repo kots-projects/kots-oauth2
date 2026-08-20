@@ -177,6 +177,22 @@ class TokenEndpointSpec extends CatsEffectSuite {
       .toOption
       .get
 
+  test("a client is refused, as unauthorized, a grant type it was not allowed") {
+    val coded = client().copy(grantTypes = Set(kots.oauth2.core.GrantType.AuthorizationCode))
+    for {
+      endpoint <- setup(clients = List(coded))
+      refused <- endpoint(
+        basic("client-1", "s3cret"),
+        Map("grant_type" -> "client_credentials", "client_id" -> clientId.value),
+        None
+      )
+      granted <- endpoint(basic("client-1", "s3cret"), codeParams("code-1"), None)
+    } yield {
+      assertEquals(code(refused), Some("unauthorized_client"))
+      assert(granted.isRight, granted.toString)
+    }
+  }
+
   test("a proven token request mints a key bound token of the dpop type") {
     for {
       endpoint <- dpopSetup
