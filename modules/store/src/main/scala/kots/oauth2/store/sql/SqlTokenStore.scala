@@ -11,10 +11,12 @@ import kots.oauth2.core.AccessToken
 import kots.oauth2.core.AccessTokenHash
 import kots.oauth2.core.Audience
 import kots.oauth2.core.AuthorizationDetails
+import kots.oauth2.core.CertificateThumbprint
 import kots.oauth2.core.ClientId
 import kots.oauth2.core.Clock
 import kots.oauth2.core.GrantId
 import kots.oauth2.core.GrantType
+import kots.oauth2.core.KeyThumbprint
 import kots.oauth2.core.ParseFailure
 import kots.oauth2.core.RefreshToken
 import kots.oauth2.core.RefreshTokenHash
@@ -196,8 +198,8 @@ final class SqlTokenStore[F[_]: Sync] private (connect: F[Connection], clock: Cl
   private def insertRecord(connection: Connection, record: TokenRecord): Unit = {
     val insert = connection.prepareStatement(
       "INSERT INTO tokens(access_hash, refresh_hash, grant_id, client_id, subject, scopes, " +
-        "issued_at, access_expires_at, refresh_expires_at, audience, actor, grant_type) " +
-        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "issued_at, access_expires_at, refresh_expires_at, audience, actor, grant_type, jkt, x5t) " +
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     try {
       insert.setString(1, record.accessTokenHash.value)
@@ -215,6 +217,8 @@ final class SqlTokenStore[F[_]: Sync] private (connect: F[Connection], clock: Cl
       optional(insert, 10, record.audience.map(_.value))
       optional(insert, 11, record.actor.map(_.value))
       insert.setString(12, record.grant.value)
+      optional(insert, 13, record.jkt.map(_.value))
+      optional(insert, 14, record.x5t.map(_.value))
       insert.executeUpdate()
       ()
     } finally insert.close()
@@ -253,7 +257,9 @@ final class SqlTokenStore[F[_]: Sync] private (connect: F[Connection], clock: Cl
       actor = Option(results.getString("actor")).map(value => required(Subject.from(value))),
       grant = Option(results.getString("grant_type"))
         .flatMap(raw => GrantType.from(raw).toOption)
-        .getOrElse(GrantType.AuthorizationCode)
+        .getOrElse(GrantType.AuthorizationCode),
+      jkt = Option(results.getString("jkt")).map(value => required(KeyThumbprint.from(value))),
+      x5t = Option(results.getString("x5t")).map(value => required(CertificateThumbprint.from(value)))
     )
 
   private def detailsOf(connection: Connection, accessHash: String): AuthorizationDetails =

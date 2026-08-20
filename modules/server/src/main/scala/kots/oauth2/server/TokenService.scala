@@ -517,7 +517,9 @@ final class TokenService[F[_]: Monad](
             refreshExpiresAt = refreshToken.map(_ => mint.refreshExpiresAt.getOrElse(mint.now)),
             audience = mint.audience,
             actor = mint.actor,
-            grant = mint.grant
+            grant = mint.grant,
+            jkt = mint.jkt,
+            x5t = mint.x5t
           )
           val event =
             if (mint.grantId.isEmpty) AuditEvent.Issued(mint.clientId, mint.subject, grantId, mint.grant)
