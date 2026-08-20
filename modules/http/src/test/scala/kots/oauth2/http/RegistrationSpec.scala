@@ -2,6 +2,7 @@ package kots.oauth2.http
 
 import kots.oauth2.core.ClientAuthMethod
 import kots.oauth2.core.ClientSecret
+import kots.oauth2.core.GrantType
 import kots.oauth2.core.ParseFailure
 import io.circe.Json
 import munit.FunSuite
@@ -135,5 +136,54 @@ class RegistrationSpec extends FunSuite {
       ClientRegistrationResponse(unsafe(kots.oauth2.core.ClientId.from("client-9")), None, parsed)
     )
     assert(!rendered.contains("scope"), rendered.toString)
+  }
+
+  test("a registration reads the grant types it will use, the authorization code when it names none") {
+    val named = Registration
+      .parse(
+        body(
+          "redirect_uris" -> uris,
+          "grant_types" -> Json.arr(Json.fromString("client_credentials"), Json.fromString("refresh_token"))
+        )
+      )
+      .map(_.grantTypes)
+    assertEquals(named, Right(Set[GrantType](GrantType.ClientCredentials, GrantType.RefreshToken)))
+    assertEquals(
+      Registration.parse(body("redirect_uris" -> uris)).map(_.grantTypes),
+      Right(Set[GrantType](GrantType.AuthorizationCode))
+    )
+  }
+
+  test("a registration naming an unknown grant type, or none in a list, is refused") {
+    List(
+      Json.arr(Json.fromString("password")),
+      Json.arr(),
+      Json.arr(Json.fromInt(1)),
+      Json.fromString("authorization_code")
+    ).foreach(types =>
+      assertEquals(
+        Registration.parse(body("redirect_uris" -> uris, "grant_types" -> types)).left.toOption.map(_.code),
+        Some("invalid_client_metadata")
+      )
+    )
+  }
+
+  test("a registration answer names the grant types the client may use, in order") {
+    val registration = Registration
+      .parse(
+        body(
+          "redirect_uris" -> uris,
+          "grant_types" -> Json.arr(Json.fromString("refresh_token"), Json.fromString("authorization_code"))
+        )
+      )
+      .toOption
+      .get
+    val rendered = ClientRegistrationResponse.render(
+      ClientRegistrationResponse(unsafe(kots.oauth2.core.ClientId.from("client-1")), None, registration)
+    )
+    assertEquals(
+      rendered.get("grant_types"),
+      Some(Json.arr(Json.fromString("authorization_code"), Json.fromString("refresh_token")))
+    )
   }
 }

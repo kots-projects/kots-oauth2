@@ -780,7 +780,8 @@ class InterpreterSpec extends CatsEffectSuite {
     val payload = io.circe.Json.obj(
       "redirect_uris" -> io.circe.Json.arr(io.circe.Json.fromString("https://fresh.example/cb")),
       "token_endpoint_auth_method" -> io.circe.Json.fromString("client_secret_basic"),
-      "scope" -> io.circe.Json.fromString("read")
+      "scope" -> io.circe.Json.fromString("read"),
+      "grant_types" -> io.circe.Json.arr(io.circe.Json.fromString("client_credentials"))
     )
     for {
       served <- routes
