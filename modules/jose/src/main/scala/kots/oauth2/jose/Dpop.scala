@@ -8,6 +8,7 @@ import java.util.Base64
 
 import cats.syntax.traverse._
 
+import kots.oauth2.core.AccessToken
 import kots.oauth2.core.JwtId
 import kots.oauth2.core.KeyId
 import kots.oauth2.core.KeyThumbprint
@@ -24,7 +25,8 @@ object Dpop {
       method: String,
       uri: String,
       issuedAt: Instant,
-      nonce: Option[String]
+      nonce: Option[String],
+      ath: Option[String] = None
   )
 
   def prove(
@@ -35,7 +37,8 @@ object Dpop {
       method: String,
       uri: String,
       issuedAt: Instant,
-      nonce: Option[String] = None
+      nonce: Option[String] = None,
+      token: Option[AccessToken] = None
   ): Either[ParseFailure, String] = {
     val header = Json.obj(
       "typ" -> Json.fromString(Type),
@@ -49,7 +52,8 @@ object Dpop {
           "htm" -> Json.fromString(method),
           "htu" -> Json.fromString(uri),
           "iat" -> Json.fromLong(issuedAt.getEpochSecond)
-        ) ++ nonce.map(value => "nonce" -> Json.fromString(value))
+        ) ++ nonce.map(value => "nonce" -> Json.fromString(value)) ++
+          token.map(value => "ath" -> Json.fromString(ath(value)))
       )
       .noSpaces
     val input = encode(header.noSpaces.getBytes(StandardCharsets.UTF_8)) + "." +
@@ -87,6 +91,10 @@ object Dpop {
         } yield proof
       case _ => Left(ParseFailure("Dpop", "not a compact jws"))
     }
+
+  /** The hash of an access token, as a proof names it. */
+  def ath(token: AccessToken): String =
+    encode(MessageDigest.getInstance("SHA-256").digest(token.value.getBytes(StandardCharsets.US_ASCII)))
 
   def thumbprint(jwk: Jwk): Either[ParseFailure, KeyThumbprint] =
     KeyThumbprint.from(digest(canonical(jwk).noSpaces))
@@ -163,7 +171,8 @@ object Dpop {
       htu <- cursor.get[String]("htu").left.map(_ => ParseFailure("Dpop", "no htu claim"))
       iat <- cursor.get[Long]("iat").left.map(_ => ParseFailure("Dpop", "no iat claim"))
       nonce = cursor.get[String]("nonce").toOption
-    } yield Proof(jkt, jti, htm, htu, Instant.ofEpochSecond(iat), nonce)
+      ath = cursor.get[String]("ath").toOption
+    } yield Proof(jkt, jti, htm, htu, Instant.ofEpochSecond(iat), nonce, ath)
 
   private def digest(canonicalJson: String): String =
     Base64.getUrlEncoder.withoutPadding.encodeToString(

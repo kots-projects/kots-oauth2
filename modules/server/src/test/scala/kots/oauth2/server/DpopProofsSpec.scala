@@ -4,6 +4,7 @@ import java.time.Instant
 
 import cats.effect.IO
 
+import kots.oauth2.core.AccessToken
 import kots.oauth2.core.Clock
 import kots.oauth2.core.JwtId
 import kots.oauth2.core.ParseFailure
@@ -36,7 +37,8 @@ class DpopProofsSpec extends CatsEffectSuite {
       method: String = "POST",
       uri: String = Token,
       issuedAt: Instant = Start,
-      nonce: Option[String] = None
+      nonce: Option[String] = None,
+      token: Option[AccessToken] = None
   ): String =
     Dpop
       .prove(
@@ -47,7 +49,8 @@ class DpopProofsSpec extends CatsEffectSuite {
         method,
         uri,
         issuedAt,
-        nonce
+        nonce,
+        token
       )
       .toOption
       .get
@@ -104,6 +107,21 @@ class DpopProofsSpec extends CatsEffectSuite {
       assert(missing.left.toOption.exists(_.code == "use_dpop_nonce"))
       assert(wrong.left.toOption.exists(_.code == "use_dpop_nonce"))
       assert(carried.isRight)
+    }
+  }
+
+  test("a proof presented with a token must name the hash of that token") {
+    val held = unsafe(AccessToken.from("at-1"))
+    val other = unsafe(AccessToken.from("at-2"))
+    for {
+      validator <- proofs()
+      named <- validator.validate(compact(token = Some(held)), "POST", Token, Some(held))
+      another <- validator.validate(compact(jti = "proof-2", token = Some(other)), "POST", Token, Some(held))
+      unnamed <- validator.validate(compact(jti = "proof-3"), "POST", Token, Some(held))
+    } yield {
+      assertEquals(named.toOption, Dpop.thumbprint(Fakes.signingJwk).toOption)
+      assert(another.left.toOption.exists(_.code == "invalid_dpop_proof"))
+      assert(unnamed.left.toOption.exists(_.code == "invalid_dpop_proof"))
     }
   }
 }

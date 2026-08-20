@@ -2,6 +2,7 @@ package kots.oauth2.jose
 
 import java.time.Instant
 
+import kots.oauth2.core.AccessToken
 import kots.oauth2.core.JwtId
 import kots.oauth2.core.ParseFailure
 import munit.FunSuite
@@ -16,7 +17,8 @@ class DpopSpec extends FunSuite {
       jti: String = "proof-1",
       method: String = "POST",
       uri: String = "https://server.example/token",
-      nonce: Option[String] = None
+      nonce: Option[String] = None,
+      token: Option[AccessToken] = None
   ): String =
     Dpop
       .prove(
@@ -27,7 +29,8 @@ class DpopSpec extends FunSuite {
         method,
         uri,
         Start,
-        nonce
+        nonce,
+        token
       )
       .toOption
       .get
@@ -44,6 +47,15 @@ class DpopSpec extends FunSuite {
 
   test("a proof carries its nonce") {
     assertEquals(Dpop.verify(proof(nonce = Some("n-1"))).toOption.get.nonce, Some("n-1"))
+  }
+
+  test("a proof names the hash of the token it accompanies as the published vector") {
+    val token = unsafe(AccessToken.from("Kz~8mXK1EalYznwH-LC-1fBAo.4Ljp~zsPE_NeO.gxU"))
+    assertEquals(
+      Dpop.verify(proof(token = Some(token))).toOption.get.ath,
+      Some("fUHyO2r2Z3DZ53EsNrWBb0xWXoaNy59IiKCAqksmQEo")
+    )
+    assertEquals(Dpop.verify(proof()).toOption.get.ath, None)
   }
 
   test("the rsa thumbprint matches the published vector") {

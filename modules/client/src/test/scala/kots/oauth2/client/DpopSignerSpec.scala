@@ -88,6 +88,14 @@ class DpopSignerSpec extends CatsEffectSuite {
     } yield assertEquals(Dpop.verify(compact.toOption.get).toOption.get.nonce, Some("n-1"))
   }
 
+  test("a proof for a resource names the hash of the token it accompanies") {
+    val token = unsafe(kots.oauth2.core.AccessToken.from("at-1"))
+    for {
+      minted <- signer
+      compact <- minted.proof("GET", "https://api.example/orders", Some(token))
+    } yield assertEquals(Dpop.verify(compact.toOption.get).toOption.get.ath, Some(Dpop.ath(token)))
+  }
+
   private def ok(body: String): Response[IO] =
     Response[IO](Status.Ok).withEntity(body)(org.http4s.EntityEncoder.stringEncoder(Charset.`UTF-8`))
 
