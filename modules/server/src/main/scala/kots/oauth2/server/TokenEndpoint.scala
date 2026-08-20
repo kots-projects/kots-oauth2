@@ -80,7 +80,9 @@ final class TokenEndpoint[F[_]: Monad](
       case Left(error)     => error.asLeft[TokenResponse].pure[F]
       case Right(enriched) =>
         TokenRequest.from(enriched).toEither match {
-          case Left(failures) => failures.head.asLeft.pure[F]
+          case Left(failures)                                           => failures.head.asLeft.pure[F]
+          case Right(request) if !client.allowsGrant(request.grantType) =>
+            (OAuth2Error.UnauthorizedClient(): OAuth2Error).asLeft[TokenResponse].pure[F]
           case Right(request) =>
             request match {
               case code: TokenRequest.Code =>

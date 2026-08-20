@@ -6,6 +6,7 @@ import kots.oauth2.core.ClientAuthMethod
 import kots.oauth2.core.ClientId
 import kots.oauth2.core.ClientSecret
 import kots.oauth2.core.ClientSecretHash
+import kots.oauth2.core.GrantType
 import kots.oauth2.core.RedirectUri
 import kots.oauth2.core.RegistrationTokenHash
 import kots.oauth2.core.Scopes
@@ -21,7 +22,8 @@ final case class Client(
     registrationTokenHash: Option[RegistrationTokenHash] = None,
     secret: Option[ClientSecret] = None,
     certificateSubject: Option[CertificateSubject] = None,
-    certificateThumbprint: Option[CertificateThumbprint] = None
+    certificateThumbprint: Option[CertificateThumbprint] = None,
+    grantTypes: Set[GrantType] = GrantType.all.toSet
 ) {
   def confidential: Boolean = authMethod != ClientAuthMethod.None
 
@@ -30,6 +32,8 @@ final case class Client(
 
   def allowsScopes(candidate: Scopes): Boolean =
     Scopes.isSubsetOf(candidate, scopes)
+
+  def allowsGrant(candidate: GrantType): Boolean = grantTypes.contains(candidate)
 }
 
 trait ClientStore[F[_]] {
