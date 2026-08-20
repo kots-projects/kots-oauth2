@@ -45,7 +45,8 @@ final class RegistrationService[F[_]: Monad](
                 secret.map(ClientSecretHash.of),
                 Jwks.empty,
                 Some(RegistrationTokenHash.of(token)),
-                secret.filter(_ => registration.authMethod == ClientAuthMethod.ClientSecretJwt)
+                secret.filter(_ => registration.authMethod == ClientAuthMethod.ClientSecretJwt),
+                grantTypes = registration.grantTypes
               )
             )
             .as(
@@ -71,7 +72,8 @@ final class RegistrationService[F[_]: Monad](
         val changed = client.copy(
           redirectUris = registration.redirectUris,
           scopes = registration.scopes,
-          authMethod = registration.authMethod
+          authMethod = registration.authMethod,
+          grantTypes = registration.grantTypes
         )
         clients
           .save(changed)
@@ -130,7 +132,7 @@ object RegistrationService {
     ClientRegistrationResponse(
       client.id,
       None,
-      ClientRegistration(client.redirectUris, client.authMethod, client.scopes),
+      ClientRegistration(client.redirectUris, client.authMethod, client.scopes, client.grantTypes),
       None
     )
 

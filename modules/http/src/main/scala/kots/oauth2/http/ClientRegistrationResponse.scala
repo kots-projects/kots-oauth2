@@ -28,6 +28,9 @@ object ClientRegistrationResponse {
           .map(uri => Json.fromString(uri.value))
           .toVector
           .sortBy(_.asString): _*
+      ),
+      Registration.GrantTypes -> Json.arr(
+        response.registration.grantTypes.map(_.value).toVector.sorted.map(Json.fromString): _*
       )
     ) ++
       (if (response.registration.scopes.value.isEmpty) Map.empty[String, Json]

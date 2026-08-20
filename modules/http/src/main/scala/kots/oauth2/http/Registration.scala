@@ -4,6 +4,7 @@ import cats.syntax.traverse._
 
 import kots.oauth2.core.ClientAuthMethod
 import kots.oauth2.core.ClientRegistration
+import kots.oauth2.core.GrantType
 import kots.oauth2.core.OAuth2Error
 import kots.oauth2.core.RedirectUri
 import kots.oauth2.core.Scopes
@@ -17,6 +18,8 @@ object Registration {
 
   val Scope: String = "scope"
 
+  val GrantTypes: String = "grant_types"
+
   val SecretExpiresAt: String = "client_secret_expires_at"
 
   val Registrable: Set[ClientAuthMethod] =
@@ -27,7 +30,8 @@ object Registration {
       uris <- redirects(body)
       method <- authMethod(body)
       scopes <- scopesOf(body)
-    } yield ClientRegistration(uris, method, scopes)
+      grants <- grantTypesOf(body)
+    } yield ClientRegistration(uris, method, scopes, grants)
 
   private def redirects(body: Map[String, Json]): Either[OAuth2Error, Set[RedirectUri]] =
     body.get(RedirectUris).flatMap(_.asArray) match {
@@ -66,5 +70,24 @@ object Registration {
         value.asString
           .toRight(OAuth2Error.InvalidClientMetadata(): OAuth2Error)
           .flatMap(raw => Scopes.parse(raw).left.map(_ => OAuth2Error.InvalidClientMetadata(): OAuth2Error))
+    }
+
+  private def grantTypesOf(body: Map[String, Json]): Either[OAuth2Error, Set[GrantType]] =
+    body.get(GrantTypes) match {
+      case None        => Right(ClientRegistration.DefaultGrantTypes)
+      case Some(value) =>
+        value.asArray
+          .filter(_.nonEmpty)
+          .toRight(OAuth2Error.InvalidClientMetadata(): OAuth2Error)
+          .flatMap(
+            _.toList.traverse(entry =>
+              entry.asString
+                .toRight(OAuth2Error.InvalidClientMetadata(): OAuth2Error)
+                .flatMap(raw =>
+                  GrantType.from(raw).left.map(_ => OAuth2Error.InvalidClientMetadata(): OAuth2Error)
+                )
+            )
+          )
+          .map(_.toSet)
     }
 }

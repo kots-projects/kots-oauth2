@@ -5,6 +5,7 @@ import kots.oauth2.core.ClientAuthMethod
 import kots.oauth2.core.ClientRegistration
 import kots.oauth2.core.ClientSecretHash
 import kots.oauth2.core.Entropy
+import kots.oauth2.core.GrantType
 import kots.oauth2.core.ParseFailure
 import kots.oauth2.core.RedirectUri
 import kots.oauth2.core.Scopes
@@ -144,6 +145,24 @@ class RegistrationServiceSpec extends CatsEffectSuite {
       assertEquals(wrong.left.toOption.map(_.code), Some("invalid_client"))
       assertEquals(missing.left.toOption.map(_.code), Some("invalid_client"))
       assertEquals(unknown.left.toOption.map(_.code), Some("invalid_client"))
+    }
+  }
+
+  test("a registration's grant types are kept with its client, and an update replaces them") {
+    val coded = registration(ClientAuthMethod.ClientSecretBasic)
+    val machine = coded.copy(grantTypes = Set[GrantType](GrantType.ClientCredentials))
+    for {
+      pair <- setup
+      (service, clients) = pair
+      answered <- service.register(coded)
+      response = answered.toOption.get
+      first <- clients.find(response.clientId)
+      updated <- service.update(response.clientId.value, response.registrationToken.map(_.value), machine)
+      second <- clients.find(response.clientId)
+    } yield {
+      assertEquals(first.map(_.grantTypes), Some(Set[GrantType](GrantType.AuthorizationCode)))
+      assertEquals(updated.map(_.registration.grantTypes), Right(machine.grantTypes))
+      assertEquals(second.map(_.grantTypes), Some(machine.grantTypes))
     }
   }
 }
