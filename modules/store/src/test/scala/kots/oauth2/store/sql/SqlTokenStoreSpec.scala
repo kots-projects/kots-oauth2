@@ -14,9 +14,11 @@ import kots.oauth2.core.AuthorizationDetail
 import kots.oauth2.core.AuthorizationDetailType
 import kots.oauth2.core.AuthorizationDetails
 import kots.oauth2.core.Audience
+import kots.oauth2.core.CertificateThumbprint
 import kots.oauth2.core.ClientId
 import kots.oauth2.core.Clock
 import kots.oauth2.core.GrantId
+import kots.oauth2.core.KeyThumbprint
 import kots.oauth2.core.Location
 import kots.oauth2.core.ParseFailure
 import kots.oauth2.core.RefreshToken
@@ -76,7 +78,9 @@ class SqlTokenStoreSpec extends CatsEffectSuite {
       accessExpiresAt = accessExpiresAt,
       refreshExpiresAt = refreshExpiresAt,
       audience = Some(unsafe(Audience.from("https://api.example"))),
-      actor = Some(unsafe(Subject.from("actor-1")))
+      actor = Some(unsafe(Subject.from("actor-1"))),
+      jkt = Some(unsafe(KeyThumbprint.from("key-thumbprint-1"))),
+      x5t = Some(unsafe(CertificateThumbprint.from("certificate-thumbprint-1")))
     )
 
   private def setup: IO[(SqlTokenStore[IO], Ref[IO, Instant])] = {

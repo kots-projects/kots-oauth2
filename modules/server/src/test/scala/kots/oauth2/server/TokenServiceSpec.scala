@@ -749,6 +749,23 @@ class TokenServiceSpec extends CatsEffectSuite {
     }
   }
 
+  test("a token is stored with the key and the certificate it is bound to") {
+    val jkt = unsafe(kots.oauth2.core.KeyThumbprint.from("key-thumbprint-1"))
+    val x5t = unsafe(kots.oauth2.core.CertificateThumbprint.from("certificate-thumbprint-1"))
+    for {
+      triple <- setup(record("code-1"))
+      (service, tokens, _) = triple
+      request = TokenRequest.ClientCredentials(None, clientId)
+      bound <- service.clientCredentials(request, client(), Some(jkt), Some(x5t))
+      plain <- service.clientCredentials(request, client())
+      held <- tokens.findByAccess(bound.toOption.get.accessToken)
+      free <- tokens.findByAccess(plain.toOption.get.accessToken)
+    } yield {
+      assertEquals(held.map(found => (found.jkt, found.x5t)), Some((Some(jkt), Some(x5t))))
+      assertEquals(free.map(found => (found.jkt, found.x5t)), Some((None, None)))
+    }
+  }
+
   test("client credentials refuse a scope the client is not registered for") {
     for {
       triple <- setup(record("code-1"))

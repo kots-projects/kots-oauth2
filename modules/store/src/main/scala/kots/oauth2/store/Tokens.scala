@@ -6,9 +6,11 @@ import kots.oauth2.core.AccessToken
 import kots.oauth2.core.AccessTokenHash
 import kots.oauth2.core.Audience
 import kots.oauth2.core.AuthorizationDetails
+import kots.oauth2.core.CertificateThumbprint
 import kots.oauth2.core.ClientId
 import kots.oauth2.core.GrantId
 import kots.oauth2.core.GrantType
+import kots.oauth2.core.KeyThumbprint
 import kots.oauth2.core.RefreshToken
 import kots.oauth2.core.RefreshTokenHash
 import kots.oauth2.core.RevocationToken
@@ -29,7 +31,9 @@ final case class TokenRecord(
     refreshExpiresAt: Option[Instant],
     audience: Option[Audience] = None,
     actor: Option[Subject] = None,
-    grant: GrantType = GrantType.AuthorizationCode
+    grant: GrantType = GrantType.AuthorizationCode,
+    jkt: Option[KeyThumbprint] = None,
+    x5t: Option[CertificateThumbprint] = None
 ) {
   def isAccessExpired(now: Instant): Boolean = !now.isBefore(accessExpiresAt)
 

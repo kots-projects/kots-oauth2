@@ -85,6 +85,11 @@ object Schema {
     Migration(
       7,
       "ALTER TABLE clients ADD COLUMN grant_types VARCHAR(1024)"
+    ),
+    Migration(
+      8,
+      "ALTER TABLE tokens ADD COLUMN jkt VARCHAR(512);" +
+        "ALTER TABLE tokens ADD COLUMN x5t VARCHAR(512)"
     )
   )
 }
