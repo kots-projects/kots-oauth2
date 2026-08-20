@@ -29,7 +29,23 @@ final class BearerGuard[F[_]: Monad](
       required: Scopes,
       acr: Option[Acr] = None
   ): F[Either[BearerGuard.Challenge, JwtClaims]] =
-    BearerGuard.token(authorization) match {
+    check(BearerGuard.token(authorization), required, acr)
+
+  /** Verifies the token sent in the authorization or in the form body. */
+  def verifyRequest(
+      authorization: Option[String],
+      form: Map[String, String],
+      required: Scopes,
+      acr: Option[Acr] = None
+  ): F[Either[BearerGuard.Challenge, JwtClaims]] =
+    check(BearerGuard.presented(authorization, form), required, acr)
+
+  private def check(
+      presented: Either[BearerGuard.Challenge, String],
+      required: Scopes,
+      acr: Option[Acr]
+  ): F[Either[BearerGuard.Challenge, JwtClaims]] =
+    presented match {
       case Left(challenge) =>
         challenge.asLeft[JwtClaims].pure[F]
       case Right(token) =>
@@ -65,6 +81,17 @@ object BearerGuard {
 
   final case class Challenge(status: Int, header: String)
 
+  val FormParameter: String = "access_token"
+
+  /** The token sent in the authorization or, failing that, in the form body. */
+  def presented(authorization: Option[String], form: Map[String, String]): Either[Challenge, String] =
+    (token(authorization), form.get(FormParameter)) match {
+      case (Right(_), Some(_))                   => Left(malformed("the token is sent more than once"))
+      case (Left(_), Some(sent)) if sent.isEmpty => Left(malformed("the token is empty"))
+      case (Left(`missing`), Some(sent))         => Right(sent)
+      case (found, _)                            => found
+    }
+
   /** The token of a bearer authorization, its scheme read regardless of case. */
   def token(authorization: Option[String]): Either[Challenge, String] =
     authorization.map(_.trim.split("\\s+").toList).getOrElse(Nil) match {
@@ -75,12 +102,13 @@ object BearerGuard {
 
   val missing: Challenge = Challenge(401, s"""Bearer realm="$Realm"""")
 
-  val invalidRequest: Challenge =
-    refusal(400, "invalid_request", "the authorization holds more than a token")
+  val invalidRequest: Challenge = malformed("the authorization holds more than a token")
 
   val invalidToken: Challenge = invalid("the token is not valid")
 
   val insufficientScope: Challenge = refusal(403, "insufficient_scope", "a required scope is not granted")
+
+  private def malformed(description: String): Challenge = refusal(400, "invalid_request", description)
 
   /** An invalid token challenge that says why. */
   def invalid(description: String): Challenge = refusal(401, "invalid_token", description)

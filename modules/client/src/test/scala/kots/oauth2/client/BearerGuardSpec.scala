@@ -249,4 +249,38 @@ class BearerGuardSpec extends CatsEffectSuite {
       .verify(None, Scopes.empty)
       .map(refused => assertEquals(refused.left.toOption.map(_.header), Some("Bearer realm=\"oauth2\"")))
   }
+
+  test("a token sent in a form body is verified as one sent in the authorization") {
+    val token = bearer(claims()).get.drop("Bearer ".length)
+    for {
+      posted <- guard().verifyRequest(
+        None,
+        Map("access_token" -> token, "q" -> "1"),
+        unsafe(Scopes.parse("read"))
+      )
+      beside <- guard().verifyRequest(Some("Basic abc"), Map("access_token" -> token), Scopes.empty)
+      none <- guard().verifyRequest(None, Map("q" -> "1"), Scopes.empty)
+    } yield {
+      assertEquals(posted.toOption.map(_.subject.value), Some("user-1"))
+      assertEquals(beside.toOption.map(_.subject.value), Some("user-1"))
+      assertEquals(none.left.toOption, Some(BearerGuard.missing))
+    }
+  }
+
+  test("a token sent both ways, or sent empty, is refused as an invalid request") {
+    val token = bearer(claims()).get.drop("Bearer ".length)
+    for {
+      twice <- guard().verifyRequest(Some("Bearer " + token), Map("access_token" -> token), Scopes.empty)
+      empty <- guard().verifyRequest(None, Map("access_token" -> ""), Scopes.empty)
+    } yield {
+      assertEquals(twice.left.toOption.map(_.status), Some(400))
+      assert(
+        twice.left.toOption.exists(
+          _.header.contains("""error_description="the token is sent more than once"""")
+        )
+      )
+      assertEquals(empty.left.toOption.map(_.status), Some(400))
+      assert(empty.left.toOption.exists(_.header.contains("""error_description="the token is empty"""")))
+    }
+  }
 }
