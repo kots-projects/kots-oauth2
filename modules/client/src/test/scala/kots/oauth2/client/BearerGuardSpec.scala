@@ -207,4 +207,46 @@ class BearerGuardSpec extends CatsEffectSuite {
       assert(refused.left.toOption.exists(_.header.contains("invalid_token")))
     }
   }
+
+  test("every error challenge says why in an error description") {
+    for {
+      expired <- guard(Start.plusSeconds(3720L)).verify(bearer(claims()), Scopes.empty)
+      foreign <- guard().verify(
+        bearer(claims(issuedBy = unsafe(Issuer.from("https://other.example")))),
+        Scopes.empty
+      )
+      elsewhere <- guard(audience = Some(unsafe(Audience.from("https://other.example"))))
+        .verify(bearer(claims()), Scopes.empty)
+      narrow <- guard().verify(bearer(claims(scopes = "read")), unsafe(Scopes.parse("write")))
+      split <- guard().verify(Some("Bearer a b"), Scopes.empty)
+      keyless <- new BearerGuard[IO](IO.pure(Left(ParseFailure("Discovery", "down"))), issuer, clockAt(Start))
+        .verify(bearer(claims()), Scopes.empty)
+    } yield {
+      def described(refused: Either[BearerGuard.Challenge, JwtClaims]): Option[String] =
+        refused.left.toOption
+          .flatMap(c => """error_description="([^"]*)"""".r.findFirstMatchIn(c.header))
+          .map(_.group(1))
+      assertEquals(described(expired), Some("expired"))
+      assertEquals(described(foreign), Some("issued by another issuer"))
+      assertEquals(described(elsewhere), Some("meant for another audience"))
+      assertEquals(described(narrow), Some("a required scope is not granted"))
+      assertEquals(described(split), Some("the authorization holds more than a token"))
+      assertEquals(described(keyless), Some("the signing keys are unavailable"))
+    }
+  }
+
+  test("a description carries no quote or backslash, so the challenge stays one header value") {
+    new BearerGuard[IO](IO.pure(Right(published)), issuer, clockAt(Start), tokenTypes = Set("a\"b\\c"))
+      .verify(bearer(claims()), Scopes.empty)
+      .map { refused =>
+        val header = refused.left.toOption.map(_.header).getOrElse("")
+        assert("""error_description="[^"\\]*"$""".r.findFirstIn(header).isDefined, header)
+      }
+  }
+
+  test("a missing token is challenged with neither an error nor a description") {
+    guard()
+      .verify(None, Scopes.empty)
+      .map(refused => assertEquals(refused.left.toOption.map(_.header), Some("Bearer realm=\"oauth2\"")))
+  }
 }

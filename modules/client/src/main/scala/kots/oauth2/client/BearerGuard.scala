@@ -35,14 +35,15 @@ final class BearerGuard[F[_]: Monad](
       case Right(token) =>
         keys.flatMap {
           case Left(_) =>
-            BearerGuard.invalidToken.asLeft[JwtClaims].pure[F]
+            BearerGuard.invalid("the signing keys are unavailable").asLeft[JwtClaims].pure[F]
           case Right(published) =>
             clock.instant.map { now =>
               Jwt.claims(token, published, now, tokenTypes, skew) match {
-                case Left(_)                                  => Left(BearerGuard.invalidToken)
-                case Right(claims) if claims.issuer != issuer => Left(BearerGuard.invalidToken)
+                case Left(failure)                            => Left(BearerGuard.invalid(failure.reason))
+                case Right(claims) if claims.issuer != issuer =>
+                  Left(BearerGuard.invalid("issued by another issuer"))
                 case Right(claims) if audience.exists(demanded => !claims.audience.contains(demanded)) =>
-                  Left(BearerGuard.invalidToken)
+                  Left(BearerGuard.invalid("meant for another audience"))
                 case Right(claims) if !Scopes.isSubsetOf(required, claims.scopes) =>
                   Left(BearerGuard.insufficientScope)
                 case Right(claims) if acr.exists(demanded => !claims.acr.contains(demanded)) =>
@@ -74,17 +75,23 @@ object BearerGuard {
 
   val missing: Challenge = Challenge(401, s"""Bearer realm="$Realm"""")
 
-  val invalidRequest: Challenge = Challenge(400, s"""Bearer realm="$Realm", error="invalid_request"""")
+  val invalidRequest: Challenge =
+    refusal(400, "invalid_request", "the authorization holds more than a token")
 
-  val invalidToken: Challenge = Challenge(401, s"""Bearer realm="$Realm", error="invalid_token"""")
+  val invalidToken: Challenge = invalid("the token is not valid")
 
-  val insufficientScope: Challenge =
-    Challenge(403, s"""Bearer realm="$Realm", error="insufficient_scope"""")
+  val insufficientScope: Challenge = refusal(403, "insufficient_scope", "a required scope is not granted")
 
-  def stepUp(demanded: List[Acr]): Challenge =
-    Challenge(
-      401,
-      s"""Bearer realm="$Realm", error="insufficient_user_authentication",""" +
-        s""" acr_values="${demanded.map(_.value).mkString(" ")}""""
-    )
+  /** An invalid token challenge that says why. */
+  def invalid(description: String): Challenge = refusal(401, "invalid_token", description)
+
+  def stepUp(demanded: List[Acr]): Challenge = {
+    val refused = refusal(401, "insufficient_user_authentication", "a stronger authentication is required")
+    refused.copy(header = refused.header + s""", acr_values="${demanded.map(_.value).mkString(" ")}"""")
+  }
+
+  private def refusal(status: Int, error: String, description: String): Challenge = {
+    val said = description.map(c => if (c < 0x20 || c > 0x7e || c == '"' || c == '\\') ' ' else c)
+    Challenge(status, s"""Bearer realm="$Realm", error="$error", error_description="$said"""")
+  }
 }
