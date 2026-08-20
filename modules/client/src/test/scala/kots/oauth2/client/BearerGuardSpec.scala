@@ -76,6 +76,24 @@ class BearerGuardSpec extends CatsEffectSuite {
     }
   }
 
+  test("the scheme is read regardless of case and of the whitespace around the token") {
+    val token = bearer(claims()).get.drop("Bearer ".length)
+    for {
+      lower <- guard().verify(Some("bearer " + token), Scopes.empty)
+      upper <- guard().verify(Some("BEARER " + token), Scopes.empty)
+      spaced <- guard().verify(Some("  Bearer   " + token + " "), Scopes.empty)
+      bare <- guard().verify(Some("Bearer"), Scopes.empty)
+      split <- guard().verify(Some("Bearer " + token + " extra"), Scopes.empty)
+    } yield {
+      assertEquals(lower.toOption.map(_.subject.value), Some("user-1"))
+      assertEquals(upper.toOption.map(_.subject.value), Some("user-1"))
+      assertEquals(spaced.toOption.map(_.subject.value), Some("user-1"))
+      assert(bare.left.toOption.exists(!_.header.contains("error=")))
+      assert(split.left.toOption.exists(_.header.contains("invalid_request")))
+      assertEquals(split.left.toOption.map(_.status), Some(400))
+    }
+  }
+
   test("a garbage, expired or foreign token is challenged as invalid_token") {
     for {
       garbage <- guard().verify(Some("Bearer not.a.jwt"), Scopes.empty)
