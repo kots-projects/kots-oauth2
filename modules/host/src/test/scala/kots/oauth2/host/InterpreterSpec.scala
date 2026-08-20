@@ -482,6 +482,29 @@ class InterpreterSpec extends CatsEffectSuite {
     }
   }
 
+  test("an issued access token is accepted by an introspection guard asking this server") {
+    for {
+      served <- routes
+      answered <- served.run(post(exchange, Some("s3cret"))).value
+      issued <- body(answered.get).map(field(_, "access_token"))
+      guard = new kots.oauth2.client.IntrospectionGuard[IO](
+        org.http4s.client.Client.fromHttpApp(served.orNotFound),
+        unsafe(EndpointUri.from("http://localhost/introspection")),
+        clientId,
+        unsafe(ClientSecret.from("s3cret")),
+        new Clock[IO] {
+          def instant: IO[Instant] = IO.pure(Start)
+        }
+      )
+      accepted <- guard.verify(Some("Bearer " + issued), unsafe(Scopes.parse("read")))
+      unknown <- guard.verify(Some("Bearer absent"), Scopes.empty)
+    } yield {
+      assertEquals(accepted.map(_.clientId), Right(Some(clientId)))
+      assertEquals(accepted.map(_.scopes), Right(unsafe(Scopes.parse("read"))))
+      assertEquals(unknown.left.toOption.map(_.status), Some(401))
+    }
+  }
+
   test("an unknown token is introspected as inactive") {
     for {
       served <- routes
