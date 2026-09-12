@@ -6,7 +6,9 @@ val Tapir = "1.11.50"
 val Circe = "0.14.16"
 val Http4s = "0.23.30"
 
-ThisBuild / organization := "kots.oauth2"
+ThisBuild / organization := "io.github.kots-projects.oauth2"
+ThisBuild / publishTo := Some(Registry.publishing("kots-oauth2"))
+ThisBuild / credentials ++= Registry.credentials
 ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / versionScheme := Some("early-semver")
 ThisBuild / licenses := List("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0"))
