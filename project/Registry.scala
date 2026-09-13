@@ -9,7 +9,8 @@ object Registry {
   def publishing(repository: String): MavenRepository =
     "registry" at s"https://$host/$owner/$repository"
 
-  val resolver: MavenRepository = "registry" at s"https://$host/$owner/*"
+  def resolver(repository: String): MavenRepository =
+    "siblings" at s"https://$host/$owner/$repository"
 
   val credentials: Seq[Credentials] =
     sys.env.get("REGISTRY_TOKEN").toSeq.map(Credentials("GitHub Package Registry", host, "_", _))
