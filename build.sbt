@@ -11,7 +11,7 @@ ThisBuild / publishTo := Some(Registry.publishing("kots-oauth2"))
 ThisBuild / credentials ++= Registry.credentials
 ThisBuild / version := "0.1.2-SNAPSHOT"
 ThisBuild / versionScheme := Some("early-semver")
-ThisBuild / licenses := List("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0"))
+ThisBuild / licenses := List("LGPL-3.0-or-later" -> url("https://www.gnu.org/licenses/lgpl-3.0.html"))
 ThisBuild / scalaVersion := Scala2
 ThisBuild / crossScalaVersions := Seq(Scala2, Scala3)
 
