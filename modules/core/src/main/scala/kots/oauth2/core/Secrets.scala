@@ -37,14 +37,20 @@ object ClientCredentials {
       .catchNonFatal(java.util.Base64.getDecoder.decode(header.trim))
       .leftMap(_ => ParseFailure("ClientCredentials", "not base64"))
       .flatMap { raw =>
-        val text = java.net.URLDecoder.decode(new String(raw, StandardCharsets.UTF_8), StandardCharsets.UTF_8)
-        val colon = text.indexOf(':')
-        if (colon < 0) Left(ParseFailure("ClientCredentials", "no separator"))
-        else
-          for {
-            id <- ClientId.from(text.substring(0, colon))
-            secret <- ClientSecret.from(text.substring(colon + 1))
-          } yield ClientCredentials(id, secret)
+        Either
+          .catchNonFatal(
+            java.net.URLDecoder.decode(new String(raw, StandardCharsets.UTF_8), StandardCharsets.UTF_8)
+          )
+          .leftMap(_ => ParseFailure("ClientCredentials", "not url encoded"))
+          .flatMap { text =>
+            val colon = text.indexOf(':')
+            if (colon < 0) Left(ParseFailure("ClientCredentials", "no separator"))
+            else
+              for {
+                id <- ClientId.from(text.substring(0, colon))
+                secret <- ClientSecret.from(text.substring(colon + 1))
+              } yield ClientCredentials(id, secret)
+          }
       }
 }
 
