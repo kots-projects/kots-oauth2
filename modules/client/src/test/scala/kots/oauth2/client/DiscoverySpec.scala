@@ -155,4 +155,29 @@ class DiscoverySpec extends CatsEffectSuite {
     assert(Discovery.keys("""{"nokeys":true}""").isLeft)
     assert(Discovery.keys("not json").isLeft)
   }
+
+  test("the userinfo endpoint is read when the document declares one") {
+    val ticking = new TestClock(start, Duration.ofSeconds(1L))
+    val declaring: String => String =
+      _.replace("}", ""","userinfo_endpoint":"https://server.example/userinfo"}""")
+    for {
+      fetches <- Ref.of[IO, Int](0)
+      kid <- Ref.of[IO, String]("key-1")
+      declared <- Discovery.create[IO](transport(fetches, kid, declaring), issuer, clockOf(ticking), ttl)
+      found <- declared.metadata
+      silent <- Discovery.create[IO](transport(fetches, kid), issuer, clockOf(ticking), ttl)
+      none <- silent.metadata
+      broken <- Discovery.create[IO](
+        transport(fetches, kid, _.replace("}", ""","userinfo_endpoint":"not a uri"}""")),
+        issuer,
+        clockOf(ticking),
+        ttl
+      )
+      refused <- broken.metadata
+    } yield {
+      assertEquals(found.toOption.flatMap(_.userinfoEndpoint).map(_.value), Some("https://server.example/userinfo"))
+      assertEquals(none.toOption.map(_.userinfoEndpoint), Some(None))
+      assert(refused.isLeft)
+    }
+  }
 }
