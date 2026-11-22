@@ -175,7 +175,10 @@ class DiscoverySpec extends CatsEffectSuite {
       )
       refused <- broken.metadata
     } yield {
-      assertEquals(found.toOption.flatMap(_.userinfoEndpoint).map(_.value), Some("https://server.example/userinfo"))
+      assertEquals(
+        found.toOption.flatMap(_.userinfoEndpoint).map(_.value),
+        Some("https://server.example/userinfo")
+      )
       assertEquals(none.toOption.map(_.userinfoEndpoint), Some(None))
       assert(refused.isLeft)
     }
@@ -186,9 +189,12 @@ class DiscoverySpec extends CatsEffectSuite {
     for {
       asked <- Ref.of[IO, List[String]](Nil)
       served = Client.fromHttpApp(HttpApp[IO] { request =>
-        asked.update(_ :+ request.uri.path.renderString).as(
-          Response[IO](Status.Ok).withEntity(metadataBody)(org.http4s.EntityEncoder.stringEncoder[IO](Charset.`UTF-8`))
-        )
+        asked
+          .update(_ :+ request.uri.path.renderString)
+          .as(
+            Response[IO](Status.Ok)
+              .withEntity(metadataBody)(org.http4s.EntityEncoder.stringEncoder[IO](Charset.`UTF-8`))
+          )
       })
       discovery <- Discovery.openId[IO](served, issuer, clockOf(ticking), ttl)
       found <- discovery.metadata
