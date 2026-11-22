@@ -106,6 +106,25 @@ class RefresherSpec extends CatsEffectSuite {
     }
   }
 
+  test("a refresh that raises releases the flight and raises again for the next caller") {
+    val outcome = for {
+      calls <- Ref.of[IO, Int](0)
+      refresher <- Refresher.create[IO] { _ =>
+        calls.update(_ + 1) >> IO.raiseError[Either[OAuth2Error, TokenClient.Grant]](
+          new IllegalStateException("the token endpoint is gone")
+        )
+      }
+      one <- refresher.refresh(first).attempt
+      other <- refresher.refresh(first).attempt
+      count <- calls.get
+    } yield (one, other, count)
+    TestControl.executeEmbed(outcome).map { case (one, other, count) =>
+      assert(one.isLeft, one.toString)
+      assert(other.isLeft, other.toString)
+      assertEquals(count, 2)
+    }
+  }
+
   test("a finished flight makes room for the next refresh of the same token") {
     val outcome = for {
       calls <- Ref.of[IO, Int](0)
