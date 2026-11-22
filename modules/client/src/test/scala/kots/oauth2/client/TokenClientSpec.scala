@@ -158,12 +158,14 @@ class TokenClientSpec extends CatsEffectSuite {
   }
 
   test("an id token in the answer is returned with the grant") {
-    val identified = """{"access_token":"at-1","token_type":"Bearer","expires_in":60,"id_token":"aaa.bbb.ccc"}"""
+    val identified =
+      """{"access_token":"at-1","token_type":"Bearer","expires_in":60,"id_token":"aaa.bbb.ccc"}"""
     for {
       seen <- Ref.of[IO, Option[(Map[String, String], Option[String])]](None)
       tokens = new TokenClient[IO](transport(seen, ok(identified)), endpoint)
       granted <- tokens.clientCredentials(clientId, secret, None)
-      bare <- new TokenClient[IO](transport(seen, ok(grantBody)), endpoint).clientCredentials(clientId, secret, None)
+      bare <- new TokenClient[IO](transport(seen, ok(grantBody)), endpoint)
+        .clientCredentials(clientId, secret, None)
     } yield {
       assertEquals(granted.toOption.flatMap(_.idToken).map(_.value), Some("aaa.bbb.ccc"))
       assertEquals(bare.toOption.map(_.idToken), Some(None))
@@ -174,7 +176,8 @@ class TokenClientSpec extends CatsEffectSuite {
     val broken = """{"access_token":"at-1","token_type":"Bearer","expires_in":60,"id_token":"a b"}"""
     for {
       seen <- Ref.of[IO, Option[(Map[String, String], Option[String])]](None)
-      refused <- new TokenClient[IO](transport(seen, ok(broken)), endpoint).clientCredentials(clientId, secret, None)
+      refused <- new TokenClient[IO](transport(seen, ok(broken)), endpoint)
+        .clientCredentials(clientId, secret, None)
     } yield assert(refused.left.toOption.exists(_.code == "server_error"))
   }
 }
