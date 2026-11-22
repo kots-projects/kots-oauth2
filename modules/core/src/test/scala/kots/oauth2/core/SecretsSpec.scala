@@ -60,6 +60,14 @@ class SecretsSpec extends ScalaCheckSuite {
     assert(ClientCredentials.fromBasic(header).isLeft)
   }
 
+  test("basic credentials refuse an invalid percent escape") {
+    val header = Base64.getEncoder.encodeToString("client-1:s3%zz".getBytes(StandardCharsets.UTF_8))
+    assertEquals(
+      ClientCredentials.fromBasic(header),
+      Left(ParseFailure("ClientCredentials", "not url encoded"))
+    )
+  }
+
   test("basic credentials refuse a value that is not base64") {
     assert(ClientCredentials.fromBasic("not base64 !").isLeft)
   }

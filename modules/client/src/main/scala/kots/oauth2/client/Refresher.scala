@@ -5,22 +5,21 @@ import scala.concurrent.duration.DurationLong
 import cats.effect.Temporal
 import cats.effect.kernel.Deferred
 import cats.effect.kernel.Ref
-import cats.syntax.flatMap._
-import cats.syntax.functor._
+import cats.syntax.all._
 
 import kots.oauth2.core.OAuth2Error
 import kots.oauth2.core.RefreshToken
 
 final class Refresher[F[_]: Temporal] private (
     call: RefreshToken => F[Either[OAuth2Error, TokenClient.Grant]],
-    flights: Ref[F, Map[RefreshToken, Deferred[F, Either[OAuth2Error, TokenClient.Grant]]]]
+    flights: Ref[F, Map[RefreshToken, Deferred[F, Either[Throwable, Either[OAuth2Error, TokenClient.Grant]]]]]
 ) {
 
   def refresh(token: RefreshToken): F[Either[OAuth2Error, TokenClient.Grant]] =
-    Deferred[F, Either[OAuth2Error, TokenClient.Grant]].flatMap { gate =>
+    Deferred[F, Either[Throwable, Either[OAuth2Error, TokenClient.Grant]]].flatMap { gate =>
       flights.modify { inFlight =>
         inFlight.get(token) match {
-          case Some(existing) => (inFlight, existing.get)
+          case Some(existing) => (inFlight, existing.get.rethrow)
           case None           => (inFlight.updated(token, gate), fly(token, gate))
         }
       }.flatten
@@ -28,10 +27,10 @@ final class Refresher[F[_]: Temporal] private (
 
   private def fly(
       token: RefreshToken,
-      gate: Deferred[F, Either[OAuth2Error, TokenClient.Grant]]
+      gate: Deferred[F, Either[Throwable, Either[OAuth2Error, TokenClient.Grant]]]
   ): F[Either[OAuth2Error, TokenClient.Grant]] =
-    attempt(token, 0).flatMap { answered =>
-      flights.update(_ - token) >> gate.complete(answered).as(answered)
+    attempt(token, 0).attempt.flatMap { attempted =>
+      flights.update(_ - token) >> gate.complete(attempted) >> gate.get.rethrow
     }
 
   private def attempt(token: RefreshToken, retried: Int): F[Either[OAuth2Error, TokenClient.Grant]] =
@@ -59,6 +58,8 @@ object Refresher {
       call: RefreshToken => F[Either[OAuth2Error, TokenClient.Grant]]
   ): F[Refresher[F]] =
     Ref
-      .of[F, Map[RefreshToken, Deferred[F, Either[OAuth2Error, TokenClient.Grant]]]](Map.empty)
+      .of[F, Map[RefreshToken, Deferred[F, Either[Throwable, Either[OAuth2Error, TokenClient.Grant]]]]](
+        Map.empty
+      )
       .map(flights => new Refresher(call, flights))
 }
