@@ -24,7 +24,8 @@ final case class DiscoveredMetadata(
     issuer: Issuer,
     authorizationEndpoint: EndpointUri,
     tokenEndpoint: EndpointUri,
-    jwksUri: EndpointUri
+    jwksUri: EndpointUri,
+    userinfoEndpoint: Option[EndpointUri] = None
 )
 
 final class Discovery[F[_]: Concurrent] private (
@@ -114,7 +115,8 @@ object Discovery {
       authorization <- string(cursor, "authorization_endpoint").flatMap(EndpointUri.from)
       token <- string(cursor, "token_endpoint").flatMap(EndpointUri.from)
       jwks <- string(cursor, "jwks_uri").flatMap(EndpointUri.from)
-    } yield DiscoveredMetadata(declared, authorization, token, jwks)
+      userinfo <- cursor.get[String]("userinfo_endpoint").toOption.traverse(EndpointUri.from)
+    } yield DiscoveredMetadata(declared, authorization, token, jwks, userinfo)
 
   def keys(text: String): Either[ParseFailure, Jwks] =
     for {
