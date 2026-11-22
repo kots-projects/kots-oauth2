@@ -9,6 +9,7 @@ import kots.oauth2.core.ClientId
 import kots.oauth2.core.ClientSecret
 import kots.oauth2.core.CodeVerifier
 import kots.oauth2.core.EndpointUri
+import kots.oauth2.core.IdToken
 import kots.oauth2.core.OAuth2Error
 import kots.oauth2.core.RedirectUri
 import kots.oauth2.core.RefreshToken
@@ -143,7 +144,8 @@ object TokenClient {
       tokenType: String,
       expiresIn: Long,
       refreshToken: Option[RefreshToken],
-      scope: Scopes
+      scope: Scopes,
+      idToken: Option[IdToken] = None
   )
 
   private val unreadable: OAuth2Error = OAuth2Error.ServerError(Some("unreadable answer"))
@@ -185,7 +187,11 @@ object TokenClient {
         .fold(
           Right(Scopes.empty): Either[OAuth2Error, Scopes]
         )(raw => Scopes.parse(raw).left.map(_ => unreadable))
-    } yield Grant(access, tokenType, expiresIn, refresh, scope)
+      identity <- cursor
+        .get[String]("id_token")
+        .toOption
+        .traverse(raw => IdToken.from(raw).left.map(_ => unreadable))
+    } yield Grant(access, tokenType, expiresIn, refresh, scope, identity)
 
   private[client] def refusal(status: Int, text: String): Either[OAuth2Error, Grant] = {
     val fields = io.circe.parser

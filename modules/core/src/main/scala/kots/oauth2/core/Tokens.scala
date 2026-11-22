@@ -76,3 +76,11 @@ object RefreshTokenHash {
   def verify(hash: RefreshTokenHash, token: RefreshToken): Boolean =
     Digests.equal(hash.value, Digests.sha256Hex(token.value))
 }
+
+/** An OpenID Connect ID token as issued, compact and not yet verified. */
+final case class IdToken private (value: String)
+
+object IdToken {
+  def from(raw: String): Either[ParseFailure, IdToken] =
+    Text.printableToken("IdToken", raw).map(new IdToken(_))
+}
