@@ -180,4 +180,22 @@ class DiscoverySpec extends CatsEffectSuite {
       assert(refused.isLeft)
     }
   }
+
+  test("an OpenID issuer is discovered at its openid-configuration") {
+    val ticking = new TestClock(start, Duration.ofSeconds(1L))
+    for {
+      asked <- Ref.of[IO, List[String]](Nil)
+      served = Client.fromHttpApp(HttpApp[IO] { request =>
+        asked.update(_ :+ request.uri.path.renderString).as(
+          Response[IO](Status.Ok).withEntity(metadataBody)(org.http4s.EntityEncoder.stringEncoder[IO](Charset.`UTF-8`))
+        )
+      })
+      discovery <- Discovery.openId[IO](served, issuer, clockOf(ticking), ttl)
+      found <- discovery.metadata
+      paths <- asked.get
+    } yield {
+      assertEquals(found.toOption.map(_.tokenEndpoint.value), Some("https://server.example/token"))
+      assertEquals(paths, List("/.well-known/openid-configuration"))
+    }
+  }
 }

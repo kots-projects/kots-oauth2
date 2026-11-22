@@ -31,6 +31,7 @@ final case class DiscoveredMetadata(
 final class Discovery[F[_]: Concurrent] private (
     transport: Client[F],
     issuer: Issuer,
+    document: String,
     clock: Clock[F],
     ttl: Lifetime,
     documents: Ref[F, Option[(Instant, DiscoveredMetadata)]],
@@ -75,7 +76,7 @@ final class Discovery[F[_]: Concurrent] private (
     }
 
   private def fetchMetadata: F[Either[ParseFailure, DiscoveredMetadata]] =
-    body(s"${issuer.value}/.well-known/oauth-authorization-server")
+    body(s"${issuer.value}/.well-known/$document")
       .map(_.flatMap(Discovery.metadataOf(issuer, _)))
 
   private def fetchKeys: F[Either[ParseFailure, Jwks]] =
@@ -101,10 +102,28 @@ object Discovery {
       clock: Clock[F],
       ttl: Lifetime
   ): F[Discovery[F]] =
+    at(transport, issuer, "oauth-authorization-server", clock, ttl)
+
+  /** The same, reading the document an OpenID Connect issuer publishes. */
+  def openId[F[_]: Concurrent](
+      transport: Client[F],
+      issuer: Issuer,
+      clock: Clock[F],
+      ttl: Lifetime
+  ): F[Discovery[F]] =
+    at(transport, issuer, "openid-configuration", clock, ttl)
+
+  private def at[F[_]: Concurrent](
+      transport: Client[F],
+      issuer: Issuer,
+      document: String,
+      clock: Clock[F],
+      ttl: Lifetime
+  ): F[Discovery[F]] =
     for {
       documents <- Ref.of[F, Option[(Instant, DiscoveredMetadata)]](None)
       published <- Ref.of[F, Option[(Instant, Jwks)]](None)
-    } yield new Discovery(transport, issuer, clock, ttl, documents, published)
+    } yield new Discovery(transport, issuer, document, clock, ttl, documents, published)
 
   private def metadataOf(expected: Issuer, text: String): Either[ParseFailure, DiscoveredMetadata] =
     for {
