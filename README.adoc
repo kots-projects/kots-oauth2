@@ -85,6 +85,10 @@ val redirect = ticket.map(_.location)                            // state + PKCE
 val found = Discovery.create[IO](http, issuer, clock, ttl)
 val meta  = found.flatMap(_.metadata)
 val keys  = found.flatMap(_.keys)
+
+val openId   = Discovery.openId[IO](http, issuer, clock, ttl)  // openid-configuration
+val userinfo = openId.flatMap(_.metadata).map(_.map(_.userinfoEndpoint))
+val identity = code.map(_.map(_.idToken))                        // compact, not yet verified
 ----
 
 Refreshing and polling:
