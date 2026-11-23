@@ -69,15 +69,45 @@ final class RegistrationService[F[_]: Monad](
     authorized(clientId, token).flatMap {
       case Left(error)   => error.asLeft[ClientRegistrationResponse].pure[F]
       case Right(client) =>
-        val changed = client.copy(
-          redirectUris = registration.redirectUris,
-          scopes = registration.scopes,
-          authMethod = registration.authMethod,
-          grantTypes = registration.grantTypes
-        )
-        clients
-          .save(changed)
-          .as(Right(RegistrationService.metadata(changed)): Either[OAuth2Error, ClientRegistrationResponse])
+        val method = registration.authMethod
+        val secretless = RegistrationService.secretless(method)
+        val needsFreshSecret =
+          (method == ClientAuthMethod.ClientSecretJwt && client.secret.isEmpty) ||
+            (!secretless && client.secretHash.isEmpty)
+        val fresh: F[Either[OAuth2Error, Option[ClientSecret]]] =
+          if (needsFreshSecret)
+            entropy.bytes(RegistrationService.SecretEntropyBytes).map { raw =>
+              ClientSecret
+                .from(Entropy.hex(raw))
+                .map(Some(_): Option[ClientSecret])
+                .leftMap(RegistrationService.failure)
+            }
+          else (None: Option[ClientSecret]).asRight[OAuth2Error].pure[F]
+        fresh.flatMap {
+          case Left(error)   => error.asLeft[ClientRegistrationResponse].pure[F]
+          case Right(minted) =>
+            val plaintext =
+              if (method == ClientAuthMethod.ClientSecretJwt) minted.orElse(client.secret) else None
+            val changed = client.copy(
+              redirectUris = registration.redirectUris,
+              scopes = registration.scopes,
+              authMethod = method,
+              secretHash =
+                if (secretless) None
+                else minted.orElse(plaintext).map(ClientSecretHash.of).orElse(client.secretHash),
+              secret = plaintext,
+              grantTypes = registration.grantTypes
+            )
+            val returned = minted.orElse(plaintext)
+            clients
+              .save(changed)
+              .as(
+                Right(ClientRegistrationResponse(changed.id, returned, registration, None)): Either[
+                  OAuth2Error,
+                  ClientRegistrationResponse
+                ]
+              )
+        }
     }
 
   def remove(clientId: String, token: Option[String]): F[Either[OAuth2Error, Unit]] =
