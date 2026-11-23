@@ -69,6 +69,98 @@ class RegistrationServiceSpec extends CatsEffectSuite {
     }
   }
 
+  test("an update from basic to jwt mints a plaintext secret that matches the stored hash") {
+    for {
+      pair <- setup
+      (service, clients) = pair
+      minted <- service.register(registration(ClientAuthMethod.ClientSecretBasic))
+      response = minted.toOption.get
+      token = response.registrationToken.get.value
+      before <- clients.find(response.clientId)
+      updated <- service.update(
+        response.clientId.value,
+        Some(token),
+        registration(ClientAuthMethod.ClientSecretJwt)
+      )
+      after <- clients.find(response.clientId)
+    } yield {
+      val secret = updated.toOption.get.secret
+      assert(secret.isDefined)
+      assertEquals(after.flatMap(_.secret), secret)
+      assertEquals(after.flatMap(_.secretHash), secret.map(ClientSecretHash.of))
+      assert(after.flatMap(_.secretHash) != before.flatMap(_.secretHash))
+      assertEquals(
+        secret.map(value =>
+          kots.oauth2.jose.Hs256.verify(kots.oauth2.jose.Hs256.sign(value, "payload"), value)
+        ),
+        Some(Right("payload"))
+      )
+    }
+  }
+
+  test("an update from jwt to basic clears the plaintext but keeps the hash") {
+    for {
+      pair <- setup
+      (service, clients) = pair
+      minted <- service.register(registration(ClientAuthMethod.ClientSecretJwt))
+      response = minted.toOption.get
+      token = response.registrationToken.get.value
+      before <- clients.find(response.clientId)
+      updated <- service.update(
+        response.clientId.value,
+        Some(token),
+        registration(ClientAuthMethod.ClientSecretBasic)
+      )
+      after <- clients.find(response.clientId)
+    } yield {
+      assert(minted.toOption.get.secret.isDefined)
+      assertEquals(updated.toOption.get.secret, None)
+      assertEquals(after.flatMap(_.secret), None)
+      assertEquals(after.flatMap(_.secretHash), before.flatMap(_.secretHash))
+    }
+  }
+
+  test("an update to a secretless method clears the hash and the plaintext") {
+    for {
+      pair <- setup
+      (service, clients) = pair
+      minted <- service.register(registration(ClientAuthMethod.ClientSecretJwt))
+      response = minted.toOption.get
+      token = response.registrationToken.get.value
+      updated <- service.update(response.clientId.value, Some(token), registration(ClientAuthMethod.None))
+      after <- clients.find(response.clientId)
+      reread <- service.read(response.clientId.value, Some(token))
+    } yield {
+      assertEquals(updated.toOption.get.secret, None)
+      assertEquals(after.flatMap(_.secret), None)
+      assertEquals(after.flatMap(_.secretHash), None)
+      assertEquals(reread.toOption.get.secret, None)
+    }
+  }
+
+  test("a jwt update returns the secret already held, and a read never does") {
+    for {
+      pair <- setup
+      (service, clients) = pair
+      minted <- service.register(registration(ClientAuthMethod.ClientSecretJwt))
+      response = minted.toOption.get
+      token = response.registrationToken.get.value
+      before <- clients.find(response.clientId)
+      read <- service.read(response.clientId.value, Some(token))
+      updated <- service.update(
+        response.clientId.value,
+        Some(token),
+        registration(ClientAuthMethod.ClientSecretJwt).copy(scopes = unsafe(Scopes.parse("read write")))
+      )
+      after <- clients.find(response.clientId)
+    } yield {
+      assertEquals(read.toOption.get.secret, None)
+      assertEquals(updated.toOption.get.secret, minted.toOption.get.secret)
+      assertEquals(after.flatMap(_.secret), minted.toOption.get.secret)
+      assertEquals(after.flatMap(_.secretHash), before.flatMap(_.secretHash))
+    }
+  }
+
   test("a mutual tls registration mints a client without a secret") {
     for {
       pair <- setup
