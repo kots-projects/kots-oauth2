@@ -1246,4 +1246,18 @@ class TokenServiceSpec extends CatsEffectSuite {
       List("read")
     )
   }
+
+  test("a requested detail with a non-string field is refused") {
+    val malformed = """[{"type":"account","identifier":1}]"""
+    for {
+      pair <- idjagSetup()
+      (service, _) = pair
+      result <- service.idJag(
+        idjag(assertionOf(asserting(readDetail))).copy(
+          details = Some(unsafe(kots.oauth2.core.AuthorizationDetailsDocument.from(malformed)))
+        ),
+        client()
+      )
+    } yield assertEquals(result.left.toOption.map(_.code), Some("invalid_authorization_details"))
+  }
 }
