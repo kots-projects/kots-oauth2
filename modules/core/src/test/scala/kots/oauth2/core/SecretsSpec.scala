@@ -55,6 +55,13 @@ class SecretsSpec extends ScalaCheckSuite {
     assertEquals(ClientCredentials.fromBasic(header).map(_.secret), Right(secret("s3/cr3t")))
   }
 
+  test("basic credentials decode a percent encoded id without treating it as a separator") {
+    val header = Base64.getEncoder.encodeToString("client%3A1:s3cr3t".getBytes(StandardCharsets.UTF_8))
+    val parsed = ClientCredentials.fromBasic(header)
+    assertEquals(parsed.map(_.id), Right(unsafe(ClientId.from("client:1"))))
+    assertEquals(parsed.map(_.secret), Right(secret("s3cr3t")))
+  }
+
   test("basic credentials refuse a value without a separator") {
     val header = Base64.getEncoder.encodeToString("client-1".getBytes(StandardCharsets.UTF_8))
     assert(ClientCredentials.fromBasic(header).isLeft)
