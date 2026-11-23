@@ -38,21 +38,39 @@ object Details {
         .left
         .map(_ => ParseFailure("AuthorizationDetails", "no type"))
         .flatMap(AuthorizationDetailType.from)
-      locations <- strings(entry, "locations").traverse(Location.from)
-      actions <- strings(entry, "actions").traverse(Action.from)
-    } yield AuthorizationDetail.of(declared, locations, actions, fields(entry))
+      locations <- strings(entry, "locations").flatMap(_.traverse(Location.from))
+      actions <- strings(entry, "actions").flatMap(_.traverse(Action.from))
+      fields <- fields(entry)
+    } yield AuthorizationDetail.of(declared, locations, actions, fields)
   }
 
-  private def strings(entry: Json, name: String): List[String] =
-    entry.hcursor.get[List[String]](name).toOption.getOrElse(Nil)
+  private def strings(entry: Json, name: String): Either[ParseFailure, List[String]] =
+    member(entry, name) match {
+      case None        => Right(Nil)
+      case Some(value) =>
+        value.asArray
+          .toRight(ParseFailure("AuthorizationDetails", s"$name is not an array"))
+          .flatMap(_.toList.traverse { element =>
+            element.asString.toRight(ParseFailure("AuthorizationDetails", s"$name has a non-string element"))
+          })
+    }
 
-  private def fields(entry: Json): Map[String, String] =
+  private def fields(entry: Json): Either[ParseFailure, Map[String, String]] =
     entry.asObject
-      .map(_.toMap.collect {
-        case (name, value) if !Reserved.contains(name) && value.isString =>
-          name -> value.asString.getOrElse("")
-      })
-      .getOrElse(Map.empty)
+      .toRight(ParseFailure("AuthorizationDetails", "not a json object"))
+      .flatMap { entryObject =>
+        entryObject.toMap.toList
+          .filterNot { case (name, _) => Reserved.contains(name) }
+          .traverse { case (name, value) =>
+            value.asString
+              .map(found => name -> found)
+              .toRight(ParseFailure("AuthorizationDetails", s"$name is not a string"))
+          }
+          .map(_.toMap)
+      }
+
+  private def member(entry: Json, name: String): Option[Json] =
+    entry.asObject.flatMap(_.apply(name))
 
   private val Reserved: Set[String] = Set("type", "locations", "actions")
 
