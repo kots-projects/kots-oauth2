@@ -1,11 +1,10 @@
 package kots.oauth2.store.sql
 
-import java.sql.DriverManager
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicInteger
 
 import cats.effect.IO
 import cats.effect.Ref
+import cats.syntax.parallel._
 import kots.oauth2.core.Action
 import kots.oauth2.core.AuthorizationCode
 import kots.oauth2.core.AuthorizationDetail
@@ -25,11 +24,9 @@ import kots.oauth2.core.Subject
 import kots.oauth2.store.CodeRecord
 import munit.CatsEffectSuite
 
-class SqlCodeStoreSpec extends CatsEffectSuite {
+abstract class SqlCodeStoreSpec(backend: Backend) extends CatsEffectSuite {
 
   private val Start: Instant = Instant.parse("2025-01-01T00:00:00Z")
-
-  private val databases = new AtomicInteger(0)
 
   private def unsafe[A](parsed: Either[ParseFailure, A]): A =
     parsed.fold(_ => sys.error("fixture"), identity)
@@ -63,23 +60,25 @@ class SqlCodeStoreSpec extends CatsEffectSuite {
     resource = Some(unsafe(ResourceIndicator.from("https://api.example")))
   )
 
-  private def setup: IO[(SqlCodeStore[IO], Ref[IO, Instant])] = {
-    val name = s"codes-${databases.incrementAndGet()}"
-    val connect = IO.blocking {
-      Class.forName("org.h2.Driver")
-      DriverManager.getConnection(s"jdbc:h2:mem:$name;DB_CLOSE_DELAY=-1")
+  private val stores = ResourceFunFixture(
+    backend.database.evalMap { database =>
+      for {
+        moment <- Ref.of[IO, Instant](Start)
+        clock = new Clock[IO] { def instant: IO[Instant] = moment.get }
+        store <- SqlCodeStore.create[IO](database, clock).toOption.get
+      } yield (store, moment)
     }
+  )
+
+  stores.test("a code consumed by many at once is answered to one alone") { case (store, _) =>
     for {
-      moment <- Ref.of[IO, Instant](Start)
-      clock = new Clock[IO] { def instant: IO[Instant] = moment.get }
-      store <- SqlCodeStore.create[IO](connect, clock).toOption.get
-    } yield (store, moment)
+      _ <- store.save(record)
+      answers <- List.fill(8)(store.consume(code)).parSequence
+    } yield assertEquals(answers.flatten, List(record))
   }
 
-  test("a saved code is consumed once with every field intact") {
+  stores.test("a saved code is consumed once with every field intact") { case (store, _) =>
     for {
-      pair <- setup
-      (store, _) = pair
       _ <- store.save(record)
       first <- store.consume(code)
       second <- store.consume(code)
@@ -89,20 +88,16 @@ class SqlCodeStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("an expired code is not consumable") {
+  stores.test("an expired code is not consumable") { case (store, moment) =>
     for {
-      pair <- setup
-      (store, moment) = pair
       _ <- store.save(record)
       _ <- moment.set(Start.plusSeconds(60L))
       consumed <- store.consume(code)
     } yield assertEquals(consumed, None)
   }
 
-  test("a redeemed code remembers its grant and the last redeem wins") {
+  stores.test("a redeemed code remembers its grant and the last redeem wins") { case (store, _) =>
     for {
-      pair <- setup
-      (store, _) = pair
       _ <- store.redeem(code, grant)
       remembered <- store.redeemed(code)
       _ <- store.redeem(code, unsafe(GrantId.from("grant-2")))
@@ -115,10 +110,8 @@ class SqlCodeStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("a sweep removes only the expired codes") {
+  stores.test("a sweep removes only the expired codes") { case (store, moment) =>
     for {
-      pair <- setup
-      (store, moment) = pair
       _ <- store.save(record)
       _ <- store.save(
         record.copy(
@@ -136,3 +129,7 @@ class SqlCodeStoreSpec extends CatsEffectSuite {
     }
   }
 }
+
+class EmbeddedCodeStoreSpec extends SqlCodeStoreSpec(Backend.embedded)
+
+class PostgresCodeStoreSpec extends SqlCodeStoreSpec(Backend.postgres)
