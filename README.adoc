@@ -16,7 +16,8 @@ descriptions, and an http4s backend. Cross-built for Scala 2.13 and 3.
 | JWS, JWT, JWK sets, HS256, DPoP proofs.
 
 | `store`
-| Store ports with in-memory and SQL adapters, plus forward-only migrations.
+| Store ports with in-memory adapters and relational ones on the `kots-data` ports, plus forward-only
+  migrations.
 
 | `http`
 | tapir endpoint descriptions, strict form decoding, response documents.
@@ -37,11 +38,18 @@ descriptions, and an http4s backend. Cross-built for Scala 2.13 and 3.
 
 [source,shell]
 ----
+docker compose up -d --wait postgres   # PostgreSQL 18 for the relational suites
 sbt +test            # cross-build and test
 sbt lint             # scalafmt and scalafix checks
 sbt compatibility    # binary compatibility (MiMa)
 sbt +publishLocal    # publish locally
 ----
+
+The relational stores take a `kots.data.Database[F]`: PostgreSQL through the native backend in
+production. Every relational suite runs twice, on an embedded database through `kots-data-jdbc`
+and on the PostgreSQL of the compose file, reached at `OAUTH2_PG_HOST`, `OAUTH2_PG_PORT` and
+`OAUTH2_PG_PASSWORD` (`127.0.0.1`, `55433` and `oauth2` by default); without the server the run
+fails.
 
 == Run the server
 
@@ -50,12 +58,16 @@ sbt +publishLocal    # publish locally
 sbt host/run                # http://localhost:8080
 ./bin/container             # assembly + docker compose up --build
 sbt "host/runMain kots.oauth2.host.KeysTool"     # key generation
-sbt "host/runMain kots.oauth2.host.MigrateTool"  # schema migrations
+sbt "host/runMain kots.oauth2.host.MigrateTool"  # schema migrations on PostgreSQL
 ----
 
 Served endpoints: `/authorize`, `/token`, `/par`, `/device_authorization`, `/introspection`,
 `/revocation`, `/register`, `/jwks`, `/health`, `/ready`,
 `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`.
+
+The migration tool takes `version | next | apply | verify <host> <port> <database> <user>`, reads
+the password from `OAUTH2_DATABASE_PASSWORD` and verifies TLS unless `plaintext` is its last
+argument.
 
 == Client
 
