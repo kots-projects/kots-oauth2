@@ -1,9 +1,6 @@
 package kots.oauth2.store.sql
 
-import java.sql.Connection
-import java.sql.DriverManager
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicInteger
 
 import cats.effect.IO
 import cats.effect.Ref
@@ -30,11 +27,9 @@ import kots.oauth2.core.TokenTypeHint
 import kots.oauth2.store.TokenRecord
 import munit.CatsEffectSuite
 
-class SqlTokenStoreSpec extends CatsEffectSuite {
+abstract class SqlTokenStoreSpec(backend: Backend) extends CatsEffectSuite {
 
   private val Start: Instant = Instant.parse("2025-01-01T00:00:00Z")
-
-  private val databases = new AtomicInteger(0)
 
   private def unsafe[A](parsed: Either[ParseFailure, A]): A =
     parsed.fold(_ => sys.error("fixture"), identity)
@@ -83,48 +78,40 @@ class SqlTokenStoreSpec extends CatsEffectSuite {
       x5t = Some(unsafe(CertificateThumbprint.from("certificate-thumbprint-1")))
     )
 
-  private def setup: IO[(SqlTokenStore[IO], Ref[IO, Instant])] = {
-    val name = s"tokens-${databases.incrementAndGet()}"
-    val connect = IO.blocking {
-      Class.forName("org.h2.Driver")
-      DriverManager.getConnection(s"jdbc:h2:mem:$name;DB_CLOSE_DELAY=-1")
+  private val stores = ResourceFunFixture(
+    backend.database.evalMap { database =>
+      for {
+        moment <- Ref.of[IO, Instant](Start)
+        clock = new Clock[IO] { def instant: IO[Instant] = moment.get }
+        store <- SqlTokenStore.create[IO](database, clock).toOption.get
+      } yield (store, moment)
     }
-    for {
-      moment <- Ref.of[IO, Instant](Start)
-      clock = new Clock[IO] { def instant: IO[Instant] = moment.get }
-      store <- SqlTokenStore.create[IO](connect: IO[Connection], clock).toOption.get
-    } yield (store, moment)
+  )
+
+  stores.test("a saved record is found by its access and refresh tokens with every field") {
+    case (store, _) =>
+      for {
+        _ <- store.save(record())
+        byAccess <- store.findByAccess(access)
+        byRefresh <- store.findByRefresh(refresh)
+        absent <- store.findByAccess(unsafe(AccessToken.from("absent")))
+      } yield {
+        assertEquals(byAccess, Some(record()))
+        assertEquals(byRefresh, Some(record()))
+        assertEquals(absent, None)
+      }
   }
 
-  test("a saved record is found by its access and refresh tokens with every field") {
+  stores.test("saving the same access hash replaces the record") { case (store, _) =>
     for {
-      pair <- setup
-      (store, _) = pair
-      _ <- store.save(record())
-      byAccess <- store.findByAccess(access)
-      byRefresh <- store.findByRefresh(refresh)
-      absent <- store.findByAccess(unsafe(AccessToken.from("absent")))
-    } yield {
-      assertEquals(byAccess, Some(record()))
-      assertEquals(byRefresh, Some(record()))
-      assertEquals(absent, None)
-    }
-  }
-
-  test("saving the same access hash replaces the record") {
-    for {
-      pair <- setup
-      (store, _) = pair
       _ <- store.save(record())
       _ <- store.save(record(carried = AuthorizationDetails.empty))
       found <- store.findByAccess(access)
     } yield assertEquals(found.map(_.details), Some(AuthorizationDetails.empty))
   }
 
-  test("an expired token is purged on lookup") {
+  stores.test("an expired token is purged on lookup") { case (store, moment) =>
     for {
-      pair <- setup
-      (store, moment) = pair
       _ <- store.save(record())
       _ <- moment.set(Start.plusSeconds(3600L))
       byAccess <- store.findByAccess(access)
@@ -136,10 +123,8 @@ class SqlTokenStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("a retired refresh token is remembered with its grant") {
+  stores.test("a retired refresh token is remembered with its grant") { case (store, _) =>
     for {
-      pair <- setup
-      (store, _) = pair
       _ <- store.save(record())
       _ <- store.retire(refresh, grant)
       gone <- store.findByRefresh(refresh)
@@ -152,10 +137,8 @@ class SqlTokenStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("revoking a refresh token answers the grant and drops its family") {
+  stores.test("revoking a refresh token answers the grant and drops its family") { case (store, _) =>
     for {
-      pair <- setup
-      (store, _) = pair
       _ <- store.save(record())
       _ <- store.save(
         record(token = unsafe(AccessToken.from("at-2")), rotating = None)
@@ -174,10 +157,8 @@ class SqlTokenStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("revoking an access token drops only that record and answers no grant") {
+  stores.test("revoking an access token drops only that record and answers no grant") { case (store, _) =>
     for {
-      pair <- setup
-      (store, _) = pair
       _ <- store.save(record())
       revoked <- store.revoke(
         unsafe(RevocationToken.from(access.value)),
@@ -191,10 +172,8 @@ class SqlTokenStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("a foreign client revokes nothing") {
+  stores.test("a foreign client revokes nothing") { case (store, _) =>
     for {
-      pair <- setup
-      (store, _) = pair
       _ <- store.save(record())
       revoked <- store.revoke(
         unsafe(RevocationToken.from(refresh.value)),
@@ -208,19 +187,15 @@ class SqlTokenStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("an unhinted revocation prefers the refresh token") {
+  stores.test("an unhinted revocation prefers the refresh token") { case (store, _) =>
     for {
-      pair <- setup
-      (store, _) = pair
       _ <- store.save(record())
       revoked <- store.revoke(unsafe(RevocationToken.from(refresh.value)), None, clientId)
     } yield assertEquals(revoked, Some(grant))
   }
 
-  test("revoking a grant drops every record of it") {
+  stores.test("revoking a grant drops every record of it") { case (store, _) =>
     for {
-      pair <- setup
-      (store, _) = pair
       _ <- store.save(record())
       _ <- store.save(record(token = unsafe(AccessToken.from("at-2")), rotating = None))
       _ <- store.save(
@@ -239,25 +214,28 @@ class SqlTokenStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("a sweep removes only records whose access and refresh are both spent") {
-    for {
-      pair <- setup
-      (store, moment) = pair
-      _ <- store.save(record())
-      _ <- store.save(
-        record(
-          token = unsafe(AccessToken.from("at-2")),
-          rotating = None,
-          refreshExpiresAt = None,
-          accessExpiresAt = Start.plusSeconds(60L)
+  stores.test("a sweep removes only records whose access and refresh are both spent") {
+    case (store, moment) =>
+      for {
+        _ <- store.save(record())
+        _ <- store.save(
+          record(
+            token = unsafe(AccessToken.from("at-2")),
+            rotating = None,
+            refreshExpiresAt = None,
+            accessExpiresAt = Start.plusSeconds(60L)
+          )
         )
-      )
-      _ <- moment.set(Start.plusSeconds(3600L))
-      swept <- store.sweep
-      kept <- store.findByRefresh(refresh)
-    } yield {
-      assertEquals(swept, 1)
-      assertEquals(kept, Some(record()))
-    }
+        _ <- moment.set(Start.plusSeconds(3600L))
+        swept <- store.sweep
+        kept <- store.findByRefresh(refresh)
+      } yield {
+        assertEquals(swept, 1)
+        assertEquals(kept, Some(record()))
+      }
   }
 }
+
+class EmbeddedTokenStoreSpec extends SqlTokenStoreSpec(Backend.embedded)
+
+class PostgresTokenStoreSpec extends SqlTokenStoreSpec(Backend.postgres)

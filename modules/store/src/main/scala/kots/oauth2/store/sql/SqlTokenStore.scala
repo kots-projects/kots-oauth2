@@ -1,12 +1,14 @@
 package kots.oauth2.store.sql
 
-import java.sql.Connection
-import java.sql.ResultSet
-import java.sql.Timestamp
+import java.time.Instant
 
-import cats.effect.kernel.Sync
-import cats.syntax.flatMap._
+import cats.effect.kernel.MonadCancelThrow
+import cats.syntax.all._
 
+import kots.data.Database
+import kots.data.Decoder
+import kots.data.Fragment
+import kots.data.Session
 import kots.oauth2.core.AccessToken
 import kots.oauth2.core.AccessTokenHash
 import kots.oauth2.core.Audience
@@ -27,260 +29,240 @@ import kots.oauth2.core.TokenTypeHint
 import kots.oauth2.core.Wire
 import kots.oauth2.store.TokenRecord
 import kots.oauth2.store.TokenStore
+import kots.oauth2.store.sql.Sql._
 
-final class SqlTokenStore[F[_]: Sync] private (connect: F[Connection], clock: Clock[F])
-    extends SqlSessions[F](connect)
-    with TokenStore[F] {
+final class SqlTokenStore[F[_]] private (database: Database[F], clock: Clock[F])(implicit
+    F: MonadCancelThrow[F]
+) extends TokenStore[F] {
 
-  def save(record: TokenRecord): F[Unit] = session { connection =>
-    withTransaction(connection) {
-      update(connection, "DELETE FROM token_details WHERE access_hash = ?", record.accessTokenHash.value)
-      update(connection, "DELETE FROM tokens WHERE access_hash = ?", record.accessTokenHash.value)
-      insertRecord(connection, record)
-    }
+  def save(record: TokenRecord): F[Unit] = database.transaction.use { transaction =>
+    purge(transaction, record.accessTokenHash) *> insertRecord(transaction, record)
   }
 
   def findByAccess(token: AccessToken): F[Option[TokenRecord]] =
     clock.instant.flatMap { now =>
-      session { connection =>
-        selectOne(connection, "SELECT * FROM tokens WHERE access_hash = ?", AccessTokenHash.of(token).value)
-          .flatMap { record =>
-            if (!record.isAccessExpired(now) && record.matchesAccess(token)) Some(record)
-            else {
-              purge(connection, record.accessTokenHash)
-              None
-            }
-          }
+      database.session.use { session =>
+        selectOne(session, sql"access_hash = ${param(AccessTokenHash.of(token).value)}")
+          .flatMap(_.flatTraverse { record =>
+            if (!record.isAccessExpired(now) && record.matchesAccess(token)) F.pure(Option(record))
+            else purge(session, record.accessTokenHash).as(Option.empty[TokenRecord])
+          })
       }
     }
 
   def findByRefresh(token: RefreshToken): F[Option[TokenRecord]] =
     clock.instant.flatMap { now =>
-      session { connection =>
-        RefreshTokenHash.of(token) match {
-          case hash =>
-            selectOne(connection, "SELECT * FROM tokens WHERE refresh_hash = ?", hash.value).flatMap {
-              record =>
-                if (!record.isRefreshExpired(now) && record.matchesRefresh(token)) Some(record)
-                else {
-                  purge(connection, record.accessTokenHash)
-                  None
-                }
-            }
-        }
+      database.session.use { session =>
+        selectOne(session, sql"refresh_hash = ${param(RefreshTokenHash.of(token).value)}")
+          .flatMap(_.flatTraverse { record =>
+            if (!record.isRefreshExpired(now) && record.matchesRefresh(token)) F.pure(Option(record))
+            else purge(session, record.accessTokenHash).as(Option.empty[TokenRecord])
+          })
       }
     }
 
-  def drop(refreshToken: RefreshToken): F[Unit] = session { connection =>
-    dropByRefresh(connection, refreshToken)
+  def drop(refreshToken: RefreshToken): F[Unit] = database.session.use(dropByRefresh(_, refreshToken))
+
+  def retire(refreshToken: RefreshToken, grantId: GrantId): F[Unit] = database.transaction.use {
+    transaction =>
+      val hash = param(RefreshTokenHash.of(refreshToken).value)
+      dropByRefresh(transaction, refreshToken) *>
+        transaction.execute(sql"DELETE FROM retired_tokens WHERE refresh_hash = $hash") *>
+        transaction
+          .execute(
+            sql"INSERT INTO retired_tokens(refresh_hash, grant_id) ${values(hash, param(grantId.value))}"
+          )
+          .void
   }
 
-  def retire(refreshToken: RefreshToken, grantId: GrantId): F[Unit] = session { connection =>
-    withTransaction(connection) {
-      dropByRefresh(connection, refreshToken)
-      val hash = RefreshTokenHash.of(refreshToken).value
-      update(connection, "DELETE FROM retired_tokens WHERE refresh_hash = ?", hash)
-      val insert = connection.prepareStatement(
-        "INSERT INTO retired_tokens(refresh_hash, grant_id) VALUES(?, ?)"
+  def rotated(refreshToken: RefreshToken): F[Option[GrantId]] = database.session.use { session =>
+    session
+      .query[String](
+        sql"SELECT grant_id FROM retired_tokens WHERE refresh_hash = ${param(RefreshTokenHash.of(refreshToken).value)}"
       )
-      try {
-        insert.setString(1, hash)
-        insert.setString(2, grantId.value)
-        insert.executeUpdate()
-        ()
-      } finally insert.close()
-    }
-  }
-
-  def rotated(refreshToken: RefreshToken): F[Option[GrantId]] = session { connection =>
-    val select = connection.prepareStatement(
-      "SELECT grant_id FROM retired_tokens WHERE refresh_hash = ?"
-    )
-    try {
-      select.setString(1, RefreshTokenHash.of(refreshToken).value)
-      val results = select.executeQuery()
-      if (results.next()) Some(required(GrantId.from(results.getString(1)))) else None
-    } finally select.close()
+      .flatMap(_.headOption.traverse(raw => required(GrantId.from(raw))))
   }
 
   def revoke(
       token: RevocationToken,
       hint: Option[TokenTypeHint],
       clientId: ClientId
-  ): F[Option[GrantId]] = session { connection =>
-    def byRefresh: Option[Option[GrantId]] =
-      RevocationToken.asRefreshToken(token).flatMap { refresh =>
-        selectOne(
-          connection,
-          "SELECT * FROM tokens WHERE refresh_hash = ? AND client_id = ?",
-          RefreshTokenHash.of(refresh).value,
-          clientId.value
-        ).map { record =>
-          revokeGrantRows(connection, record.grantId)
-          Some(record.grantId)
-        }
+  ): F[Option[GrantId]] = database.session.use { session =>
+    val owned = sql"client_id = ${param(clientId.value)}"
+    val byRefresh: F[Option[Option[GrantId]]] =
+      RevocationToken.asRefreshToken(token).flatTraverse { refresh =>
+        selectOne(session, sql"refresh_hash = ${param(RefreshTokenHash.of(refresh).value)} AND $owned")
+          .flatMap(_.traverse(record => revokeGrantRows(session, record.grantId).as(Option(record.grantId))))
       }
-    def byAccess: Option[Option[GrantId]] =
-      RevocationToken.asAccessToken(token).flatMap { access =>
-        selectOne(
-          connection,
-          "SELECT * FROM tokens WHERE access_hash = ? AND client_id = ?",
-          AccessTokenHash.of(access).value,
-          clientId.value
-        ).map { record =>
-          purge(connection, record.accessTokenHash)
-          None
-        }
+    val byAccess: F[Option[Option[GrantId]]] =
+      RevocationToken.asAccessToken(token).flatTraverse { access =>
+        selectOne(session, sql"access_hash = ${param(AccessTokenHash.of(access).value)} AND $owned")
+          .flatMap(_.traverse(record => purge(session, record.accessTokenHash).as(Option.empty[GrantId])))
       }
     val outcome = hint match {
       case Some(TokenTypeHint.RefreshToken) => byRefresh
       case Some(TokenTypeHint.AccessToken)  => byAccess
-      case None                             => byRefresh.orElse(byAccess)
+      case None => byRefresh.flatMap(_.fold(byAccess)(found => F.pure(Option(found))))
     }
-    outcome.flatten
+    outcome.map(_.flatten)
   }
 
-  def revokeGrant(grantId: GrantId): F[Unit] = session { connection =>
-    revokeGrantRows(connection, grantId)
-  }
+  def revokeGrant(grantId: GrantId): F[Unit] = database.session.use(revokeGrantRows(_, grantId))
 
   def sweep: F[Int] =
     clock.instant.flatMap { now =>
-      session { connection =>
-        val moment = Timestamp.from(now)
-        val details = connection.prepareStatement(
-          "DELETE FROM token_details WHERE access_hash IN (SELECT access_hash FROM tokens " +
-            "WHERE access_expires_at <= ? AND (refresh_expires_at IS NULL OR refresh_expires_at <= ?))"
-        )
-        try {
-          details.setTimestamp(1, moment)
-          details.setTimestamp(2, moment)
-          details.executeUpdate()
-        } finally details.close()
-        val tokens = connection.prepareStatement(
-          "DELETE FROM tokens WHERE access_expires_at <= ? " +
-            "AND (refresh_expires_at IS NULL OR refresh_expires_at <= ?)"
-        )
-        try {
-          tokens.setTimestamp(1, moment)
-          tokens.setTimestamp(2, moment)
-          tokens.executeUpdate()
-        } finally tokens.close()
+      val spent =
+        sql"access_expires_at <= ${moment(now)} AND (refresh_expires_at IS NULL OR refresh_expires_at <= ${moment(now)})"
+      database.session.use { session =>
+        session.execute(
+          sql"DELETE FROM token_details WHERE access_hash IN (SELECT access_hash FROM tokens WHERE $spent)"
+        ) *> session.execute(sql"DELETE FROM tokens WHERE $spent").map(_.toInt)
       }
     }
 
-  private def dropByRefresh(connection: Connection, refreshToken: RefreshToken): Unit = {
-    val hash = RefreshTokenHash.of(refreshToken).value
-    update(
-      connection,
-      "DELETE FROM token_details WHERE access_hash IN (SELECT access_hash FROM tokens " +
-        "WHERE refresh_hash = ?)",
-      hash
-    )
-    update(connection, "DELETE FROM tokens WHERE refresh_hash = ?", hash)
-  }
+  private def dropByRefresh(session: Session[F], refreshToken: RefreshToken): F[Unit] =
+    removeWhere(session, sql"refresh_hash = ${param(RefreshTokenHash.of(refreshToken).value)}")
 
-  private def revokeGrantRows(connection: Connection, grantId: GrantId): Unit = {
-    update(
-      connection,
-      "DELETE FROM token_details WHERE access_hash IN (SELECT access_hash FROM tokens " +
-        "WHERE grant_id = ?)",
-      grantId.value
-    )
-    update(connection, "DELETE FROM tokens WHERE grant_id = ?", grantId.value)
-  }
+  private def revokeGrantRows(session: Session[F], grantId: GrantId): F[Unit] =
+    removeWhere(session, sql"grant_id = ${param(grantId.value)}")
 
-  private def purge(connection: Connection, hash: AccessTokenHash): Unit = {
-    update(connection, "DELETE FROM token_details WHERE access_hash = ?", hash.value)
-    update(connection, "DELETE FROM tokens WHERE access_hash = ?", hash.value)
-  }
+  private def removeWhere(session: Session[F], condition: Fragment): F[Unit] =
+    session.execute(
+      sql"DELETE FROM token_details WHERE access_hash IN (SELECT access_hash FROM tokens WHERE $condition)"
+    ) *> session.execute(sql"DELETE FROM tokens WHERE $condition").void
 
-  private def insertRecord(connection: Connection, record: TokenRecord): Unit = {
-    val insert = connection.prepareStatement(
-      "INSERT INTO tokens(access_hash, refresh_hash, grant_id, client_id, subject, scopes, " +
-        "issued_at, access_expires_at, refresh_expires_at, audience, actor, grant_type, jkt, x5t) " +
-        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )
-    try {
-      insert.setString(1, record.accessTokenHash.value)
-      optional(insert, 2, record.refreshTokenHash.map(_.value))
-      insert.setString(3, record.grantId.value)
-      insert.setString(4, record.clientId.value)
-      insert.setString(5, record.subject.value)
-      insert.setString(6, Wire[Scopes].encode(record.scopes))
-      insert.setTimestamp(7, Timestamp.from(record.issuedAt))
-      insert.setTimestamp(8, Timestamp.from(record.accessExpiresAt))
-      record.refreshExpiresAt match {
-        case Some(expiry) => insert.setTimestamp(9, Timestamp.from(expiry))
-        case None         => insert.setNull(9, java.sql.Types.TIMESTAMP)
-      }
-      optional(insert, 10, record.audience.map(_.value))
-      optional(insert, 11, record.actor.map(_.value))
-      insert.setString(12, record.grant.value)
-      optional(insert, 13, record.jkt.map(_.value))
-      optional(insert, 14, record.x5t.map(_.value))
-      insert.executeUpdate()
-      ()
-    } finally insert.close()
-    DetailRows.insert(
-      connection,
+  private def purge(session: Session[F], hash: AccessTokenHash): F[Unit] =
+    session.execute(sql"DELETE FROM token_details WHERE access_hash = ${param(hash.value)}") *>
+      session.execute(sql"DELETE FROM tokens WHERE access_hash = ${param(hash.value)}").void
+
+  private def insertRecord(session: Session[F], record: TokenRecord): F[Unit] =
+    session.execute(
+      sql"INSERT INTO tokens(${SqlTokenStore.Columns}) ${values(
+          param(record.accessTokenHash.value),
+          param(record.refreshTokenHash.map(_.value)),
+          param(record.grantId.value),
+          param(record.clientId.value),
+          param(record.subject.value),
+          param(Wire[Scopes].encode(record.scopes)),
+          moment(record.issuedAt),
+          moment(record.accessExpiresAt),
+          moment(record.refreshExpiresAt),
+          param(record.audience.map(_.value)),
+          param(record.actor.map(_.value)),
+          param(record.grant.value),
+          param(record.jkt.map(_.value)),
+          param(record.x5t.map(_.value))
+        )}"
+    ) *> DetailRows.insert(
+      session,
       "token_details",
       "access_hash",
       record.accessTokenHash.value,
       record.details
     )
-  }
 
-  private def selectOne(connection: Connection, sql: String, values: String*): Option[TokenRecord] = {
-    val select = connection.prepareStatement(sql)
-    try {
-      values.zipWithIndex.foreach { case (value, index) => select.setString(index + 1, value) }
-      val results = select.executeQuery()
-      if (results.next()) Some(row(connection, results)) else None
-    } finally select.close()
-  }
-
-  private def row(connection: Connection, results: ResultSet): TokenRecord =
-    TokenRecord(
-      accessTokenHash = required(AccessTokenHash.fromStored(results.getString("access_hash"))),
-      refreshTokenHash =
-        Option(results.getString("refresh_hash")).map(raw => required(RefreshTokenHash.fromStored(raw))),
-      grantId = required(GrantId.from(results.getString("grant_id"))),
-      clientId = required(ClientId.from(results.getString("client_id"))),
-      subject = required(Subject.from(results.getString("subject"))),
-      scopes = required(Wire[Scopes].decode(results.getString("scopes"))),
-      details = detailsOf(connection, results.getString("access_hash")),
-      issuedAt = results.getTimestamp("issued_at").toInstant,
-      accessExpiresAt = results.getTimestamp("access_expires_at").toInstant,
-      refreshExpiresAt = Option(results.getTimestamp("refresh_expires_at")).map(_.toInstant),
-      audience = Option(results.getString("audience")).map(value => required(Audience.from(value))),
-      actor = Option(results.getString("actor")).map(value => required(Subject.from(value))),
-      grant = Option(results.getString("grant_type"))
-        .flatMap(raw => GrantType.from(raw).toOption)
-        .getOrElse(GrantType.AuthorizationCode),
-      jkt = Option(results.getString("jkt")).map(value => required(KeyThumbprint.from(value))),
-      x5t = Option(results.getString("x5t")).map(value => required(CertificateThumbprint.from(value)))
-    )
-
-  private def detailsOf(connection: Connection, accessHash: String): AuthorizationDetails =
-    DetailRows.read(connection, "token_details", "access_hash", accessHash)
-
-  private def required[A](parsed: Either[ParseFailure, A]): A = DetailRows.required(parsed)
-
+  private def selectOne(session: Session[F], condition: Fragment): F[Option[TokenRecord]] =
+    session
+      .query(sql"SELECT ${SqlTokenStore.Columns} FROM tokens WHERE $condition")(SqlTokenStore.Row)
+      .flatMap(_.headOption.traverse { row =>
+        DetailRows
+          .read(session, "token_details", "access_hash", row._1)
+          .flatMap(details => required(SqlTokenStore.record(row, details)))
+      })
 }
 
 object SqlTokenStore {
 
-  def create[F[_]: Sync](
-      connect: F[Connection],
+  private val Columns: Fragment = Fragment.sql(
+    "access_hash, refresh_hash, grant_id, client_id, subject, scopes, issued_at, access_expires_at, " +
+      "refresh_expires_at, audience, actor, grant_type, jkt, x5t"
+  )
+
+  private type Row = (
+      String,
+      Option[String],
+      String,
+      String,
+      String,
+      String,
+      Instant,
+      Instant,
+      Option[Instant],
+      Option[String],
+      Option[String],
+      Option[String],
+      Option[String],
+      Option[String]
+  )
+
+  private val Row: Decoder[Row] = (
+    Decoder[String],
+    Decoder[Option[String]],
+    Decoder[String],
+    Decoder[String],
+    Decoder[String],
+    Decoder[String],
+    Sql.instant,
+    Sql.instant,
+    Decoder.option(Sql.instant),
+    Decoder[Option[String]],
+    Decoder[Option[String]],
+    Decoder[Option[String]],
+    Decoder[Option[String]],
+    Decoder[Option[String]]
+  ).tupled
+
+  private def record(row: Row, details: AuthorizationDetails): Either[ParseFailure, TokenRecord] =
+    row match {
+      case (
+            access,
+            refresh,
+            grantId,
+            clientId,
+            subject,
+            scopes,
+            issued,
+            expires,
+            refreshExpires,
+            audience,
+            actor,
+            grantType,
+            jkt,
+            x5t
+          ) =>
+        for {
+          accessHash <- AccessTokenHash.fromStored(access)
+          refreshHash <- refresh.traverse(RefreshTokenHash.fromStored)
+          grant <- GrantId.from(grantId)
+          client <- ClientId.from(clientId)
+          owner <- Subject.from(subject)
+          granted <- Wire[Scopes].decode(scopes)
+          target <- audience.traverse(Audience.from)
+          acting <- actor.traverse(Subject.from)
+          key <- jkt.traverse(KeyThumbprint.from)
+          certificate <- x5t.traverse(CertificateThumbprint.from)
+        } yield TokenRecord(
+          accessHash,
+          refreshHash,
+          grant,
+          client,
+          owner,
+          granted,
+          details,
+          issued,
+          expires,
+          refreshExpires,
+          target,
+          acting,
+          grantType.flatMap(raw => GrantType.from(raw).toOption).getOrElse(GrantType.AuthorizationCode),
+          key,
+          certificate
+        )
+    }
+
+  def create[F[_]: MonadCancelThrow](
+      database: Database[F],
       clock: Clock[F]
   ): Either[String, F[SqlTokenStore[F]]] =
-    ConnectionMigrations
-      .of(connect, Schema.migrations)
-      .map(engine =>
-        engine.apply.flatMap {
-          case Left(reason) => Sync[F].raiseError(new IllegalStateException(reason))
-          case Right(_)     => Sync[F].pure(new SqlTokenStore(connect, clock))
-        }
-      )
+    Schema.applied(database, new SqlTokenStore(database, clock))
 }
