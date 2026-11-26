@@ -1,11 +1,10 @@
 package kots.oauth2.store.sql
 
-import java.sql.DriverManager
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicInteger
 
 import cats.effect.IO
 import cats.effect.Ref
+import cats.syntax.parallel._
 import kots.oauth2.core.ClientId
 import kots.oauth2.core.Clock
 import kots.oauth2.core.DeviceCode
@@ -18,11 +17,9 @@ import kots.oauth2.store.DeviceRecord
 import kots.oauth2.store.memory.InMemoryDeviceStore
 import munit.CatsEffectSuite
 
-class SqlDeviceStoreSpec extends CatsEffectSuite {
+abstract class SqlDeviceStoreSpec(backend: Backend) extends CatsEffectSuite {
 
   private val Start: Instant = Instant.parse("2025-01-01T00:00:00Z")
-
-  private val databases = new AtomicInteger(0)
 
   private def unsafe[A](parsed: Either[ParseFailure, A]): A =
     parsed.fold(_ => sys.error("fixture"), identity)
@@ -45,23 +42,25 @@ class SqlDeviceStoreSpec extends CatsEffectSuite {
     resource = Some(unsafe(ResourceIndicator.from("https://api.example")))
   )
 
-  private def setup: IO[(SqlDeviceStore[IO], Ref[IO, Instant])] = {
-    val name = s"devices-${databases.incrementAndGet()}"
-    val connect = IO.blocking {
-      Class.forName("org.h2.Driver")
-      DriverManager.getConnection(s"jdbc:h2:mem:$name;DB_CLOSE_DELAY=-1")
+  private val stores = ResourceFunFixture(
+    backend.database.evalMap { database =>
+      for {
+        moment <- Ref.of[IO, Instant](Start)
+        clock = new Clock[IO] { def instant: IO[Instant] = moment.get }
+        store <- SqlDeviceStore.create[IO](database, clock).toOption.get
+      } yield (store, moment)
     }
+  )
+
+  stores.test("a device code consumed by many at once is answered to one alone") { case (store, _) =>
     for {
-      moment <- Ref.of[IO, Instant](Start)
-      clock = new Clock[IO] { def instant: IO[Instant] = moment.get }
-      store <- SqlDeviceStore.create[IO](connect, clock).toOption.get
-    } yield (store, moment)
+      _ <- store.save(record)
+      answers <- List.fill(8)(store.consume(device)).parSequence
+    } yield assertEquals(answers.flatten, List(record))
   }
 
-  test("a poll answers the record and remembers the polling moment") {
+  stores.test("a poll answers the record and remembers the polling moment") { case (store, moment) =>
     for {
-      pair <- setup
-      (store, moment) = pair
       _ <- store.save(record)
       first <- store.poll(device)
       _ <- moment.set(Start.plusSeconds(1L))
@@ -74,10 +73,8 @@ class SqlDeviceStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("an approval decides once and only while undecided and alive") {
+  stores.test("an approval decides once and only while undecided and alive") { case (store, moment) =>
     for {
-      pair <- setup
-      (store, moment) = pair
       _ <- store.save(record)
       approved <- store.approve(user, subject)
       again <- store.approve(user, subject)
@@ -92,10 +89,8 @@ class SqlDeviceStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("a denial decides the code and an approval cannot follow") {
+  stores.test("a denial decides the code and an approval cannot follow") { case (store, _) =>
     for {
-      pair <- setup
-      (store, _) = pair
       _ <- store.save(record)
       denied <- store.deny(user)
       approved <- store.approve(user, subject)
@@ -107,10 +102,8 @@ class SqlDeviceStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("a consume is single use and refuses an expired code") {
+  stores.test("a consume is single use and refuses an expired code") { case (store, moment) =>
     for {
-      pair <- setup
-      (store, moment) = pair
       _ <- store.save(record)
       first <- store.consume(device)
       second <- store.consume(device)
@@ -124,10 +117,8 @@ class SqlDeviceStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("a sweep removes only the expired records") {
+  stores.test("a sweep removes only the expired records") { case (store, moment) =>
     for {
-      pair <- setup
-      (store, moment) = pair
       _ <- store.save(record)
       _ <- store.save(
         record.copy(
@@ -145,25 +136,28 @@ class SqlDeviceStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("an expired record beside a live one leaves both stores naming the live one") {
-    val expired = record.copy(
-      deviceCode = unsafe(DeviceCode.from("device-0")),
-      expiresAt = Start.plusSeconds(1L)
-    )
-    for {
-      pair <- setup
-      (store, moment) = pair
-      memory <- InMemoryDeviceStore.create[IO](new Clock[IO] { def instant: IO[Instant] = moment.get })
-      _ <- store.save(expired)
-      _ <- memory.save(expired)
-      _ <- store.save(record)
-      _ <- memory.save(record)
-      _ <- moment.set(Start.plusSeconds(2L))
-      relational <- store.pending(user)
-      inMemory <- memory.pending(user)
-    } yield {
-      assertEquals(inMemory.map(_.deviceCode), Some(device))
-      assertEquals(relational, inMemory)
-    }
+  stores.test("an expired record beside a live one leaves both stores naming the live one") {
+    case (store, moment) =>
+      val expired = record.copy(
+        deviceCode = unsafe(DeviceCode.from("device-0")),
+        expiresAt = Start.plusSeconds(1L)
+      )
+      for {
+        memory <- InMemoryDeviceStore.create[IO](new Clock[IO] { def instant: IO[Instant] = moment.get })
+        _ <- store.save(expired)
+        _ <- memory.save(expired)
+        _ <- store.save(record)
+        _ <- memory.save(record)
+        _ <- moment.set(Start.plusSeconds(2L))
+        relational <- store.pending(user)
+        inMemory <- memory.pending(user)
+      } yield {
+        assertEquals(inMemory.map(_.deviceCode), Some(device))
+        assertEquals(relational, inMemory)
+      }
   }
 }
+
+class EmbeddedDeviceStoreSpec extends SqlDeviceStoreSpec(Backend.embedded)
+
+class PostgresDeviceStoreSpec extends SqlDeviceStoreSpec(Backend.postgres)

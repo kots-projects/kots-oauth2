@@ -1,16 +1,18 @@
 package kots.oauth2.store.sql
 
-import java.sql.Connection
-import java.sql.PreparedStatement
-import java.sql.ResultSet
-import java.sql.Timestamp
+import java.time.Instant
 
-import cats.effect.kernel.Sync
-import cats.syntax.flatMap._
+import cats.effect.kernel.MonadCancelThrow
+import cats.syntax.all._
 
+import kots.data.Database
+import kots.data.Decoder
+import kots.data.Fragment
+import kots.data.Session
 import kots.oauth2.core.ClientId
 import kots.oauth2.core.Clock
 import kots.oauth2.core.DeviceCode
+import kots.oauth2.core.ParseFailure
 import kots.oauth2.core.ResourceIndicator
 import kots.oauth2.core.Scopes
 import kots.oauth2.core.Subject
@@ -18,173 +20,137 @@ import kots.oauth2.core.UserCode
 import kots.oauth2.core.Wire
 import kots.oauth2.store.DeviceRecord
 import kots.oauth2.store.DeviceStore
+import kots.oauth2.store.sql.Sql._
 
-final class SqlDeviceStore[F[_]: Sync] private (connect: F[Connection], clock: Clock[F])
-    extends SqlSessions[F](connect)
-    with DeviceStore[F] {
+final class SqlDeviceStore[F[_]: MonadCancelThrow] private (database: Database[F], clock: Clock[F])
+    extends DeviceStore[F] {
 
-  def save(record: DeviceRecord): F[Unit] = session { connection =>
-    withTransaction(connection) {
-      remove(connection, record.deviceCode)
-      val insert = connection.prepareStatement(
-        "INSERT INTO devices(device_code, user_code, client_id, scopes, expires_at, subject, " +
-          "denied, last_polled_at, resource) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      )
-      try {
-        insert.setString(1, record.deviceCode.value)
-        insert.setString(2, record.userCode.value)
-        insert.setString(3, record.clientId.value)
-        insert.setString(4, Wire[Scopes].encode(record.scopes))
-        insert.setTimestamp(5, Timestamp.from(record.expiresAt))
-        optional(insert, 6, record.subject.map(_.value))
-        insert.setBoolean(7, record.denied)
-        record.lastPolledAt match {
-          case Some(polled) => insert.setTimestamp(8, Timestamp.from(polled))
-          case None         => insert.setNull(8, java.sql.Types.TIMESTAMP)
-        }
-        optional(insert, 9, record.resource.map(_.value))
-        insert.executeUpdate()
-        ()
-      } finally insert.close()
-    }
+  def save(record: DeviceRecord): F[Unit] = database.transaction.use { transaction =>
+    remove(transaction, record.deviceCode) *>
+      transaction
+        .execute(
+          sql"INSERT INTO devices(${SqlDeviceStore.Columns}) ${values(
+              param(record.deviceCode.value),
+              param(record.userCode.value),
+              param(record.clientId.value),
+              param(Wire[Scopes].encode(record.scopes)),
+              moment(record.expiresAt),
+              param(record.subject.map(_.value)),
+              param(record.denied),
+              moment(record.lastPolledAt),
+              param(record.resource.map(_.value))
+            )}"
+        )
+        .void
   }
 
   def pending(userCode: UserCode): F[Option[DeviceRecord]] =
     clock.instant.flatMap(now =>
-      session { connection =>
-        val select = connection.prepareStatement(
-          "SELECT * FROM devices WHERE user_code = ? AND subject IS NULL AND denied = FALSE " +
-            "AND expires_at > ? ORDER BY expires_at DESC"
+      database.session.use { session =>
+        select(
+          session,
+          sql"user_code = ${param(userCode.value)} AND subject IS NULL AND denied = FALSE AND expires_at > ${moment(now)} ORDER BY expires_at DESC"
         )
-        try {
-          select.setString(1, userCode.value)
-          select.setTimestamp(2, Timestamp.from(now))
-          val results = select.executeQuery()
-          if (results.next()) Some(row(results)) else None
-        } finally select.close()
       }
     )
 
   def approve(userCode: UserCode, subject: Subject): F[Boolean] =
-    decide(userCode, "subject = ?", statement => statement.setString(1, subject.value))
+    decide(userCode, sql"subject = ${param(subject.value)}")
 
   def deny(userCode: UserCode): F[Boolean] =
-    decide(userCode, "denied = TRUE", _ => ())
+    decide(userCode, sql"denied = TRUE")
 
   def poll(deviceCode: DeviceCode): F[Option[DeviceRecord]] =
     clock.instant.flatMap { now =>
-      session { connection =>
-        withTransaction(connection) {
-          selectOne(connection, deviceCode).map { record =>
-            val update = connection.prepareStatement(
-              "UPDATE devices SET last_polled_at = ? WHERE device_code = ?"
+      database.transaction.use { transaction =>
+        selectOne(transaction, deviceCode).flatMap(_.traverse { record =>
+          transaction
+            .execute(
+              sql"UPDATE devices SET last_polled_at = ${moment(now)} WHERE device_code = ${param(deviceCode.value)}"
             )
-            try {
-              update.setTimestamp(1, Timestamp.from(now))
-              update.setString(2, deviceCode.value)
-              update.executeUpdate()
-            } finally update.close()
-            record
-          }
-        }
+            .as(record)
+        })
       }
     }
 
   def consume(deviceCode: DeviceCode): F[Option[DeviceRecord]] =
     clock.instant.flatMap { now =>
-      session { connection =>
-        withTransaction(connection) {
-          selectOne(connection, deviceCode).flatMap { record =>
-            val removal = connection.prepareStatement("DELETE FROM devices WHERE device_code = ?")
-            val removed =
-              try {
-                removal.setString(1, deviceCode.value)
-                removal.executeUpdate()
-              } finally removal.close()
-            if (removed == 1 && !record.isExpired(now)) Some(record) else None
-          }
-        }
+      database.transaction.use { transaction =>
+        selectOne(transaction, deviceCode).flatMap(_.flatTraverse { record =>
+          remove(transaction, deviceCode).map(removed =>
+            if (removed == 1L && !record.isExpired(now)) Some(record) else None
+          )
+        })
       }
     }
 
   def sweep: F[Int] =
     clock.instant.flatMap { now =>
-      session { connection =>
-        val statement = connection.prepareStatement("DELETE FROM devices WHERE expires_at <= ?")
-        try {
-          statement.setTimestamp(1, Timestamp.from(now))
-          statement.executeUpdate()
-        } finally statement.close()
-      }
+      database.session.use(
+        _.execute(sql"DELETE FROM devices WHERE expires_at <= ${moment(now)}").map(_.toInt)
+      )
     }
 
-  private def decide(
-      userCode: UserCode,
-      assignment: String,
-      bind: PreparedStatement => Unit
-  ): F[Boolean] =
+  private def decide(userCode: UserCode, assignment: Fragment): F[Boolean] =
     clock.instant.flatMap { now =>
-      session { connection =>
-        val update = connection.prepareStatement(
-          s"UPDATE devices SET $assignment WHERE user_code = ? " +
-            "AND subject IS NULL AND denied = FALSE AND expires_at > ?"
-        )
-        try {
-          bind(update)
-          val offset = if (assignment.contains("?")) 1 else 0
-          update.setString(offset + 1, userCode.value)
-          update.setTimestamp(offset + 2, Timestamp.from(now))
-          update.executeUpdate() == 1
-        } finally update.close()
+      database.session.use { session =>
+        session
+          .execute(
+            sql"UPDATE devices SET $assignment WHERE user_code = ${param(userCode.value)} AND subject IS NULL AND denied = FALSE AND expires_at > ${moment(now)}"
+          )
+          .map(_ == 1L)
       }
     }
 
-  private def remove(connection: Connection, deviceCode: DeviceCode): Unit = {
-    val statement = connection.prepareStatement("DELETE FROM devices WHERE device_code = ?")
-    try {
-      statement.setString(1, deviceCode.value)
-      statement.executeUpdate()
-      ()
-    } finally statement.close()
-  }
+  private def remove(session: Session[F], deviceCode: DeviceCode): F[Long] =
+    session.execute(sql"DELETE FROM devices WHERE device_code = ${param(deviceCode.value)}")
 
-  private def selectOne(connection: Connection, deviceCode: DeviceCode): Option[DeviceRecord] = {
-    val select = connection.prepareStatement("SELECT * FROM devices WHERE device_code = ?")
-    try {
-      select.setString(1, deviceCode.value)
-      val results = select.executeQuery()
-      if (results.next()) Some(row(results)) else None
-    } finally select.close()
-  }
+  private def selectOne(session: Session[F], deviceCode: DeviceCode): F[Option[DeviceRecord]] =
+    select(session, sql"device_code = ${param(deviceCode.value)}")
 
-  private def row(results: ResultSet): DeviceRecord =
-    DeviceRecord(
-      deviceCode = DetailRows.required(DeviceCode.from(results.getString("device_code"))),
-      userCode = DetailRows.required(UserCode.from(results.getString("user_code"))),
-      clientId = DetailRows.required(ClientId.from(results.getString("client_id"))),
-      scopes = DetailRows.required(Wire[Scopes].decode(results.getString("scopes"))),
-      expiresAt = results.getTimestamp("expires_at").toInstant,
-      subject = Option(results.getString("subject")).map(value => DetailRows.required(Subject.from(value))),
-      denied = results.getBoolean("denied"),
-      lastPolledAt = Option(results.getTimestamp("last_polled_at")).map(_.toInstant),
-      resource =
-        Option(results.getString("resource")).map(value => DetailRows.required(ResourceIndicator.from(value)))
-    )
-
+  private def select(session: Session[F], condition: Fragment): F[Option[DeviceRecord]] =
+    session
+      .query(sql"SELECT ${SqlDeviceStore.Columns} FROM devices WHERE $condition")(SqlDeviceStore.Row)
+      .flatMap(_.headOption.traverse(row => required(SqlDeviceStore.record(row))))
 }
 
 object SqlDeviceStore {
 
-  def create[F[_]: Sync](
-      connect: F[Connection],
+  private val Columns: Fragment = Fragment.sql(
+    "device_code, user_code, client_id, scopes, expires_at, subject, denied, last_polled_at, resource"
+  )
+
+  private type Row =
+    (String, String, String, String, Instant, Option[String], Boolean, Option[Instant], Option[String])
+
+  private val Row: Decoder[Row] = (
+    Decoder[String],
+    Decoder[String],
+    Decoder[String],
+    Decoder[String],
+    Sql.instant,
+    Decoder[Option[String]],
+    Decoder[Boolean],
+    Decoder.option(Sql.instant),
+    Decoder[Option[String]]
+  ).tupled
+
+  private def record(row: Row): Either[ParseFailure, DeviceRecord] =
+    row match {
+      case (deviceCode, userCode, clientId, scopes, expiresAt, subject, denied, polled, resource) =>
+        for {
+          device <- DeviceCode.from(deviceCode)
+          user <- UserCode.from(userCode)
+          client <- ClientId.from(clientId)
+          granted <- Wire[Scopes].decode(scopes)
+          owner <- subject.traverse(Subject.from)
+          indicator <- resource.traverse(ResourceIndicator.from)
+        } yield DeviceRecord(device, user, client, granted, expiresAt, owner, denied, polled, indicator)
+    }
+
+  def create[F[_]: MonadCancelThrow](
+      database: Database[F],
       clock: Clock[F]
   ): Either[String, F[SqlDeviceStore[F]]] =
-    ConnectionMigrations
-      .of(connect, Schema.migrations)
-      .map(engine =>
-        engine.apply.flatMap {
-          case Left(reason) => Sync[F].raiseError(new IllegalStateException(reason))
-          case Right(_)     => Sync[F].pure(new SqlDeviceStore(connect, clock))
-        }
-      )
+    Schema.applied(database, new SqlDeviceStore(database, clock))
 }
