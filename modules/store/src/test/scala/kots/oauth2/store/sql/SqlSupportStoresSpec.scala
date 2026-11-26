@@ -15,7 +15,6 @@ import kots.oauth2.core.ParseFailure
 import kots.oauth2.core.RequestUri
 import kots.oauth2.core.Scopes
 import kots.oauth2.core.Subject
-import kots.oauth2.jose.Fakes
 import kots.oauth2.store.AuditEvent
 import kots.oauth2.store.ConsentRecord
 import kots.oauth2.store.PushedRequest
@@ -45,39 +44,6 @@ class SqlSupportStoresSpec extends CatsEffectSuite {
   override def beforeEach(context: BeforeEach): Unit = {
     databases.incrementAndGet()
     ()
-  }
-
-  test("keys publish in insertion order and rotation moves the current key") {
-    for {
-      store <- SqlKeyStore.create[IO](connect).toOption.get
-      _ <- store.add(Fakes.rsa("key-1"))
-      _ <- store.add(Fakes.ec("key-2"))
-      _ <- store.retire(Fakes.rsa("key-1").kid)
-      published <- store.jwks
-      current <- store.current
-      retiredFound <- store.find(Fakes.rsa("key-1").kid)
-      _ <- store.retire(Fakes.ec("key-2").kid)
-      exhausted <- store.current
-    } yield {
-      assertEquals(published.keys.map(_.kid.value), List("key-1", "key-2"))
-      assertEquals(current.map(_.kid.value), Some("key-2"))
-      assertEquals(retiredFound.map(_.kid.value), Some("key-1"))
-      assertEquals(exhausted, None)
-    }
-  }
-
-  test("re-adding a known key identifier replaces it and revives it") {
-    for {
-      store <- SqlKeyStore.create[IO](connect).toOption.get
-      _ <- store.add(Fakes.rsa("key-1"))
-      _ <- store.retire(Fakes.rsa("key-1").kid)
-      _ <- store.add(Fakes.rsa("key-1"))
-      current <- store.current
-      published <- store.jwks
-    } yield {
-      assertEquals(current.map(_.kid.value), Some("key-1"))
-      assertEquals(published.keys.size, 1)
-    }
   }
 
   test("consents union across grants and decide by subset") {

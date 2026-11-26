@@ -11,86 +11,16 @@ import kots.oauth2.core.ClientId
 import kots.oauth2.core.Clock
 import kots.oauth2.core.GrantId
 import kots.oauth2.core.GrantType
-import kots.oauth2.core.KeyId
 import kots.oauth2.core.RequestUri
 import kots.oauth2.core.Scopes
 import kots.oauth2.core.Subject
 import kots.oauth2.core.Wire
-import kots.oauth2.jose.Jwk
-import kots.oauth2.jose.Jwks
 import kots.oauth2.store.AuditEvent
 import kots.oauth2.store.AuditLog
 import kots.oauth2.store.ConsentRecord
 import kots.oauth2.store.ConsentStore
-import kots.oauth2.store.KeyStore
 import kots.oauth2.store.PushedRequest
 import kots.oauth2.store.PushedRequestStore
-
-final class SqlKeyStore[F[_]: Sync] private (connect: F[Connection])
-    extends SqlSessions[F](connect)
-    with KeyStore[F] {
-
-  def jwks: F[Jwks] = session { connection =>
-    Jwks(rows(connection, "SELECT kid, alg, params FROM server_keys ORDER BY seq"))
-  }
-
-  def current: F[Option[Jwk]] = session { connection =>
-    rows(
-      connection,
-      "SELECT kid, alg, params FROM server_keys WHERE retired = FALSE ORDER BY seq DESC LIMIT 1"
-    ).headOption
-  }
-
-  def find(kid: KeyId): F[Option[Jwk]] = session { connection =>
-    val select = connection.prepareStatement("SELECT kid, alg, params FROM server_keys WHERE kid = ?")
-    try {
-      select.setString(1, kid.value)
-      val results = select.executeQuery()
-      if (results.next())
-        Some(KeyRows.keyOf(results.getString(1), results.getString(2), results.getString(3)))
-      else None
-    } finally select.close()
-  }
-
-  def add(key: Jwk): F[Unit] = session { connection =>
-    withTransaction(connection) {
-      execute(connection, "DELETE FROM server_keys WHERE kid = ?", key.kid.value)
-      val insert = connection.prepareStatement(
-        "INSERT INTO server_keys(kid, alg, params, retired) VALUES(?, ?, ?, FALSE)"
-      )
-      try {
-        insert.setString(1, key.kid.value)
-        insert.setString(2, key.alg.value)
-        insert.setString(3, KeyRows.encode(key))
-        insert.executeUpdate()
-        ()
-      } finally insert.close()
-    }
-  }
-
-  def retire(kid: KeyId): F[Unit] = session { connection =>
-    execute(connection, "UPDATE server_keys SET retired = TRUE WHERE kid = ?", kid.value)
-    ()
-  }
-
-  private def rows(connection: Connection, sql: String): List[Jwk] = {
-    val statement = connection.createStatement()
-    try {
-      val results = statement.executeQuery(sql)
-      Iterator
-        .continually(results)
-        .takeWhile(_.next())
-        .map(entry => KeyRows.keyOf(entry.getString(1), entry.getString(2), entry.getString(3)))
-        .toList
-    } finally statement.close()
-  }
-}
-
-object SqlKeyStore {
-
-  def create[F[_]: Sync](connect: F[Connection]): Either[String, F[SqlKeyStore[F]]] =
-    SqlSupportStores.bootstrapped(connect, new SqlKeyStore(connect))
-}
 
 final class SqlConsentStore[F[_]: Sync] private (connect: F[Connection])
     extends SqlSessions[F](connect)
