@@ -38,6 +38,4 @@ private[sql] object KeyRows {
           }
         } yield key
     }
-
-  def keyOf(kid: String, alg: String, joined: String): Jwk = DetailRows.required(parsed((kid, alg, joined)))
 }

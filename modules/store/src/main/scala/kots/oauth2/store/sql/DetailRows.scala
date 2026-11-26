@@ -3,7 +3,6 @@ package kots.oauth2.store.sql
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import java.sql.Connection
 
 import cats.Applicative
 import cats.MonadThrow
@@ -72,56 +71,6 @@ private[sql] object DetailRows {
           verbs <- split(actions).traverse(Action.from)
         } yield AuthorizationDetail.of(kind, places, verbs, decodeFields(fields))
     }
-
-  def insert(
-      connection: Connection,
-      table: String,
-      keyColumn: String,
-      key: String,
-      details: AuthorizationDetails
-  ): Unit =
-    details.value.zipWithIndex.foreach { case (detail, index) =>
-      val child = connection.prepareStatement(
-        s"INSERT INTO $table($keyColumn, ord, detail_type, locations, actions, fields) " +
-          "VALUES(?, ?, ?, ?, ?, ?)"
-      )
-      try {
-        child.setString(1, key)
-        child.setInt(2, index)
-        child.setString(3, detail.detailType.value)
-        child.setString(4, detail.locations.map(_.value).mkString(" "))
-        child.setString(5, detail.actions.map(_.value).mkString(" "))
-        child.setString(6, encodeFields(detail.fields))
-        child.executeUpdate()
-        ()
-      } finally child.close()
-    }
-
-  def read(connection: Connection, table: String, keyColumn: String, key: String): AuthorizationDetails = {
-    val select = connection.prepareStatement(
-      s"SELECT detail_type, locations, actions, fields FROM $table WHERE $keyColumn = ? ORDER BY ord"
-    )
-    try {
-      select.setString(1, key)
-      val results = select.executeQuery()
-      val details = Iterator
-        .continually(results)
-        .takeWhile(_.next())
-        .map(row =>
-          AuthorizationDetail.of(
-            required(AuthorizationDetailType.from(row.getString(1))),
-            split(row.getString(2)).map(value => required(Location.from(value))),
-            split(row.getString(3)).map(value => required(Action.from(value))),
-            decodeFields(row.getString(4))
-          )
-        )
-        .toList
-      AuthorizationDetails.of(details)
-    } finally select.close()
-  }
-
-  def required[A](parsed: Either[ParseFailure, A]): A =
-    parsed.left.map(failure => new IllegalStateException(failure.toString): Throwable).toTry.get
 
   private def split(joined: String): List[String] =
     joined.split(' ').toList.filter(_.nonEmpty)
