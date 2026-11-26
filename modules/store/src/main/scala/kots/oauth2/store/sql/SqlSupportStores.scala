@@ -2,100 +2,16 @@ package kots.oauth2.store.sql
 
 import java.sql.Connection
 import java.sql.ResultSet
-import java.sql.Timestamp
 
 import cats.effect.kernel.Sync
 import cats.syntax.flatMap._
 
 import kots.oauth2.core.ClientId
-import kots.oauth2.core.Clock
 import kots.oauth2.core.GrantId
 import kots.oauth2.core.GrantType
-import kots.oauth2.core.RequestUri
 import kots.oauth2.core.Subject
 import kots.oauth2.store.AuditEvent
 import kots.oauth2.store.AuditLog
-import kots.oauth2.store.PushedRequest
-import kots.oauth2.store.PushedRequestStore
-
-final class SqlPushedRequestStore[F[_]: Sync] private (connect: F[Connection], clock: Clock[F])
-    extends SqlSessions[F](connect)
-    with PushedRequestStore[F] {
-
-  def save(record: PushedRequest): F[Unit] = session { connection =>
-    withTransaction(connection) {
-      execute(connection, "DELETE FROM pushed_requests WHERE request_uri = ?", record.uri.value)
-      val insert = connection.prepareStatement(
-        "INSERT INTO pushed_requests(request_uri, client_id, parameters, expires_at) VALUES(?, ?, ?, ?)"
-      )
-      try {
-        insert.setString(1, record.uri.value)
-        insert.setString(2, record.clientId.value)
-        insert.setString(3, DetailRows.encodeFields(record.parameters))
-        insert.setTimestamp(4, Timestamp.from(record.expiresAt))
-        insert.executeUpdate()
-        ()
-      } finally insert.close()
-    }
-  }
-
-  def peek(uri: RequestUri): F[Option[PushedRequest]] =
-    clock.instant.flatMap { now =>
-      session { connection =>
-        selectOne(connection, uri).filter(record => !record.isExpired(now))
-      }
-    }
-
-  def consume(uri: RequestUri): F[Option[PushedRequest]] =
-    clock.instant.flatMap { now =>
-      session { connection =>
-        withTransaction(connection) {
-          selectOne(connection, uri).flatMap { record =>
-            val removed = execute(connection, "DELETE FROM pushed_requests WHERE request_uri = ?", uri.value)
-            if (removed == 1 && !record.isExpired(now)) Some(record) else None
-          }
-        }
-      }
-    }
-
-  def sweep: F[Int] =
-    clock.instant.flatMap { now =>
-      session { connection =>
-        val statement = connection.prepareStatement("DELETE FROM pushed_requests WHERE expires_at <= ?")
-        try {
-          statement.setTimestamp(1, Timestamp.from(now))
-          statement.executeUpdate()
-        } finally statement.close()
-      }
-    }
-
-  private def selectOne(connection: Connection, uri: RequestUri): Option[PushedRequest] = {
-    val select = connection.prepareStatement("SELECT * FROM pushed_requests WHERE request_uri = ?")
-    try {
-      select.setString(1, uri.value)
-      val results = select.executeQuery()
-      if (results.next())
-        Some(
-          PushedRequest(
-            uri = DetailRows.required(RequestUri.from(results.getString("request_uri"))),
-            clientId = DetailRows.required(ClientId.from(results.getString("client_id"))),
-            parameters = DetailRows.decodeFields(results.getString("parameters")),
-            expiresAt = results.getTimestamp("expires_at").toInstant
-          )
-        )
-      else None
-    } finally select.close()
-  }
-}
-
-object SqlPushedRequestStore {
-
-  def create[F[_]: Sync](
-      connect: F[Connection],
-      clock: Clock[F]
-  ): Either[String, F[SqlPushedRequestStore[F]]] =
-    SqlSupportStores.bootstrapped(connect, new SqlPushedRequestStore(connect, clock))
-}
 
 final class SqlAuditLog[F[_]: Sync] private (connect: F[Connection])
     extends SqlSessions[F](connect)

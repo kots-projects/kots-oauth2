@@ -2,25 +2,18 @@ package kots.oauth2.store.sql
 
 import java.sql.Connection
 import java.sql.DriverManager
-import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
 
 import cats.effect.IO
-import cats.effect.Ref
 import kots.oauth2.core.ClientId
-import kots.oauth2.core.Clock
 import kots.oauth2.core.GrantId
 import kots.oauth2.core.GrantType
 import kots.oauth2.core.ParseFailure
-import kots.oauth2.core.RequestUri
 import kots.oauth2.core.Subject
 import kots.oauth2.store.AuditEvent
-import kots.oauth2.store.PushedRequest
 import munit.CatsEffectSuite
 
 class SqlSupportStoresSpec extends CatsEffectSuite {
-
-  private val Start: Instant = Instant.parse("2025-01-01T00:00:00Z")
 
   private val databases = new AtomicInteger(0)
 
@@ -42,38 +35,6 @@ class SqlSupportStoresSpec extends CatsEffectSuite {
   override def beforeEach(context: BeforeEach): Unit = {
     databases.incrementAndGet()
     ()
-  }
-
-  test("a pushed request is consumed once and never after its lifetime") {
-    val uri = unsafe(RequestUri.from("urn:ietf:params:oauth:request_uri:one"))
-    val record = PushedRequest(
-      uri,
-      clientId,
-      Map("response_type" -> "code", "scope" -> "read write"),
-      Start.plusSeconds(60L)
-    )
-    for {
-      moment <- Ref.of[IO, Instant](Start)
-      clock = new Clock[IO] { def instant: IO[Instant] = moment.get }
-      store <- SqlPushedRequestStore.create[IO](connect, clock).toOption.get
-      _ <- store.save(record)
-      read <- store.peek(uri)
-      unspent <- store.peek(uri)
-      first <- store.consume(uri)
-      second <- store.consume(uri)
-      _ <- store.save(record)
-      _ <- moment.set(Start.plusSeconds(60L))
-      expired <- store.consume(uri)
-      _ <- store.save(record)
-      swept <- store.sweep
-    } yield {
-      assertEquals(read, Some(record))
-      assertEquals(unspent, Some(record))
-      assertEquals(first, Some(record))
-      assertEquals(second, None)
-      assertEquals(expired, None)
-      assertEquals(swept, 1)
-    }
   }
 
   test("audit events read back in order with their fields") {
