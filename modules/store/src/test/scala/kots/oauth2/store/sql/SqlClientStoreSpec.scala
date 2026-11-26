@@ -1,9 +1,7 @@
 package kots.oauth2.store.sql
 
-import java.sql.DriverManager
-import java.util.concurrent.atomic.AtomicInteger
-
 import cats.effect.IO
+import kots.data.Fragment
 import kots.oauth2.core.CertificateThumbprint
 import kots.oauth2.core.ClientAuthMethod
 import kots.oauth2.core.ClientId
@@ -20,9 +18,7 @@ import kots.oauth2.jose.Jwks
 import kots.oauth2.store.Client
 import munit.CatsEffectSuite
 
-class SqlClientStoreSpec extends CatsEffectSuite {
-
-  private val databases = new AtomicInteger(0)
+abstract class SqlClientStoreSpec(backend: Backend) extends CatsEffectSuite {
 
   private def unsafe[A](parsed: Either[ParseFailure, A]): A =
     parsed.fold(_ => sys.error("fixture"), identity)
@@ -45,18 +41,14 @@ class SqlClientStoreSpec extends CatsEffectSuite {
     certificateThumbprint = Some(unsafe(CertificateThumbprint.from(Fakes.ClientCertificateThumbprint)))
   )
 
-  private def setup: IO[SqlClientStore[IO]] = {
-    val name = s"clients-${databases.incrementAndGet()}"
-    val connect = IO.blocking {
-      Class.forName("org.h2.Driver")
-      DriverManager.getConnection(s"jdbc:h2:mem:$name;DB_CLOSE_DELAY=-1")
-    }
-    SqlClientStore.create[IO](connect).toOption.get
-  }
+  private val stores = ResourceFunFixture(
+    backend.database.evalMap(database =>
+      SqlClientStore.create[IO](database).toOption.get.map(store => (store, database))
+    )
+  )
 
-  test("a saved client is found with every field and key intact") {
+  stores.test("a saved client is found with every field and key intact") { case (store, _) =>
     for {
-      store <- setup
       _ <- store.save(registered)
       found <- store.find(id)
       absent <- store.find(unsafe(ClientId.from("absent")))
@@ -66,9 +58,8 @@ class SqlClientStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("saving the same client id replaces the registration") {
+  stores.test("saving the same client id replaces the registration") { case (store, _) =>
     for {
-      store <- setup
       _ <- store.save(registered)
       _ <- store.save(
         registered.copy(scopes = unsafe(Scopes.parse("read")), keys = Jwks(Nil), secret = None)
@@ -81,9 +72,8 @@ class SqlClientStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("a deleted client is gone with its keys") {
+  stores.test("a deleted client is gone with its keys") { case (store, _) =>
     for {
-      store <- setup
       _ <- store.save(registered)
       _ <- store.delete(id)
       found <- store.find(id)
@@ -91,23 +81,14 @@ class SqlClientStoreSpec extends CatsEffectSuite {
     } yield assertEquals(found, None)
   }
 
-  test("the grant types a client is allowed survive a save, and a row without them allows every grant") {
-    val name = s"clients-${databases.incrementAndGet()}"
-    val connect = IO.blocking {
-      Class.forName("org.h2.Driver")
-      DriverManager.getConnection(s"jdbc:h2:mem:$name;DB_CLOSE_DELAY=-1")
-    }
+  stores.test(
+    "the grant types a client is allowed survive a save, and a row without them allows every grant"
+  ) { case (store, database) =>
     val coded = Set[GrantType](GrantType.AuthorizationCode, GrantType.RefreshToken)
     for {
-      store <- SqlClientStore.create[IO](connect).toOption.get
       _ <- store.save(registered.copy(grantTypes = coded))
       restricted <- store.find(id)
-      _ <- connect.flatMap(connection =>
-        IO.blocking {
-          try connection.createStatement().executeUpdate("UPDATE clients SET grant_types = NULL")
-          finally connection.close()
-        }
-      )
+      _ <- database.session.use(_.execute(Fragment.sql("UPDATE clients SET grant_types = NULL")))
       legacy <- store.find(id)
     } yield {
       assertEquals(restricted.map(_.grantTypes), Some(coded))
@@ -115,3 +96,7 @@ class SqlClientStoreSpec extends CatsEffectSuite {
     }
   }
 }
+
+class EmbeddedClientStoreSpec extends SqlClientStoreSpec(Backend.embedded)
+
+class PostgresClientStoreSpec extends SqlClientStoreSpec(Backend.postgres)
