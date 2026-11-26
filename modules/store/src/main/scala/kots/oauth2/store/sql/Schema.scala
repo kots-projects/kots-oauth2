@@ -1,6 +1,22 @@
 package kots.oauth2.store.sql
 
+import cats.effect.kernel.MonadCancelThrow
+import cats.syntax.flatMap._
+
+import kots.data.Database
+
 object Schema {
+
+  /** The store, once the migrations of the schema are applied. */
+  private[sql] def applied[F[_], A](database: Database[F], store: => A)(implicit
+      F: MonadCancelThrow[F]
+  ): Either[String, F[A]] =
+    Migrations
+      .of(database, migrations)
+      .map(_.apply.flatMap {
+        case Left(reason) => F.raiseError[A](new IllegalStateException(reason))
+        case Right(_)     => F.pure(store)
+      })
 
   val migrations: List[Migration] = List(
     Migration(

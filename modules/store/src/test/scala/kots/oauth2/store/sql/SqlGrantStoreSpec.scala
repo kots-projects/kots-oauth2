@@ -1,8 +1,5 @@
 package kots.oauth2.store.sql
 
-import java.sql.DriverManager
-import java.util.concurrent.atomic.AtomicInteger
-
 import cats.effect.IO
 import kots.oauth2.core.AuthorizationDetail
 import kots.oauth2.core.AuthorizationDetailType
@@ -16,9 +13,7 @@ import kots.oauth2.core.Subject
 import kots.oauth2.store.Grant
 import munit.CatsEffectSuite
 
-class SqlGrantStoreSpec extends CatsEffectSuite {
-
-  private val databases = new AtomicInteger(0)
+abstract class SqlGrantStoreSpec(backend: Backend) extends CatsEffectSuite {
 
   private def unsafe[A](parsed: Either[ParseFailure, A]): A =
     parsed.fold(_ => sys.error("fixture"), identity)
@@ -39,18 +34,12 @@ class SqlGrantStoreSpec extends CatsEffectSuite {
     revoked = false
   )
 
-  private def setup: IO[SqlGrantStore[IO]] = {
-    val name = s"grants-${databases.incrementAndGet()}"
-    val connect = IO.blocking {
-      Class.forName("org.h2.Driver")
-      DriverManager.getConnection(s"jdbc:h2:mem:$name;DB_CLOSE_DELAY=-1")
-    }
-    SqlGrantStore.create[IO](connect).toOption.get
-  }
+  private val stores = ResourceFunFixture(
+    backend.database.evalMap(database => SqlGrantStore.create[IO](database).toOption.get)
+  )
 
-  test("a saved grant is found with every field intact") {
+  stores.test("a saved grant is found with every field intact") { store =>
     for {
-      store <- setup
       _ <- store.save(grant)
       found <- store.find(grant.id)
       absent <- store.find(unsafe(GrantId.from("absent")))
@@ -60,9 +49,8 @@ class SqlGrantStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("saving the same grant id replaces the record") {
+  stores.test("saving the same grant id replaces the record") { store =>
     for {
-      store <- setup
       _ <- store.save(grant)
       _ <- store.save(grant.copy(scopes = unsafe(Scopes.parse("read")), details = AuthorizationDetails.empty))
       found <- store.find(grant.id)
@@ -72,9 +60,8 @@ class SqlGrantStoreSpec extends CatsEffectSuite {
     }
   }
 
-  test("a revoked grant stays readable and marked") {
+  stores.test("a revoked grant stays readable and marked") { store =>
     for {
-      store <- setup
       _ <- store.save(grant)
       _ <- store.revoke(grant.id)
       found <- store.find(grant.id)
@@ -82,3 +69,7 @@ class SqlGrantStoreSpec extends CatsEffectSuite {
     } yield assertEquals(found.map(_.revoked), Some(true))
   }
 }
+
+class EmbeddedGrantStoreSpec extends SqlGrantStoreSpec(Backend.embedded)
+
+class PostgresGrantStoreSpec extends SqlGrantStoreSpec(Backend.postgres)

@@ -6,9 +6,7 @@ import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 
 import cats.ApplicativeThrow
-import cats.syntax.either._
-import cats.syntax.foldable._
-import cats.syntax.semigroup._
+import cats.syntax.all._
 
 import kots.data.Decoder
 import kots.data.Encoder
@@ -31,6 +29,10 @@ private[sql] object Sql {
   /** The value as the parameters it is sent as. */
   def param[A](value: A)(implicit encoder: Encoder[A]): Fragment =
     encoder.encode(value).foldMap(Fragment.value)
+
+  /** A VALUES clause of the fragments, in order. */
+  def values(fragments: Fragment*): Fragment =
+    Fragment.sql("VALUES(") |+| fragments.toList.intercalate(Fragment.sql(", ")) |+| Fragment.sql(")")
 
   /** A moment as the zoneless timestamp the columns hold. */
   def moment(instant: Instant): Fragment =
