@@ -5,10 +5,12 @@ val Scala3 = "3.3.6"
 val Tapir = "1.11.50"
 val Circe = "0.14.16"
 val Http4s = "0.23.30"
+val Data = "0.1.0-SNAPSHOT"
 
 ThisBuild / organization := "io.github.kots-projects.oauth2"
 ThisBuild / publishTo := Some(Registry.publishing("kots-oauth2"))
 ThisBuild / credentials ++= Registry.credentials
+ThisBuild / resolvers += Registry.resolver("kots-data")
 ThisBuild / version := "0.2.1-SNAPSHOT"
 ThisBuild / versionScheme := Some("early-semver")
 ThisBuild / licenses := List("LGPL-3.0-or-later" -> url("https://www.gnu.org/licenses/lgpl-3.0.html"))
@@ -75,6 +77,10 @@ lazy val store = module("store")
   .settings(
     libraryDependencies ++= Seq(
       "org.typelevel" %% "cats-effect" % "3.6.0",
+      "io.github.kots-projects.data" %% "kots-data-core" % Data,
+      "io.github.kots-projects.data" %% "kots-data-jdbc" % Data % Test,
+      "io.github.kots-projects.data" %% "kots-data-net" % Data % Test,
+      "io.github.kots-projects.data" %% "kots-data-pg" % Data % Test,
       "com.h2database" % "h2" % "2.3.232" % Test
     )
   )

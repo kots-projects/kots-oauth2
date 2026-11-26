@@ -149,7 +149,7 @@ final class SqlClientStore[F[_]: Sync] private (connect: F[Connection])
 object SqlClientStore {
 
   def create[F[_]: Sync](connect: F[Connection]): Either[String, F[SqlClientStore[F]]] =
-    Migrations
+    ConnectionMigrations
       .of(connect, Schema.migrations)
       .map(engine =>
         engine.apply.flatMap {

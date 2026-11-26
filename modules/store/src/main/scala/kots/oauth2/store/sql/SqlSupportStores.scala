@@ -318,7 +318,7 @@ object SqlAuditLog {
 private[sql] object SqlSupportStores {
 
   def bootstrapped[F[_]: Sync, A](connect: F[Connection], store: => A): Either[String, F[A]] =
-    Migrations
+    ConnectionMigrations
       .of(connect, Schema.migrations)
       .map(engine =>
         engine.apply.flatMap {

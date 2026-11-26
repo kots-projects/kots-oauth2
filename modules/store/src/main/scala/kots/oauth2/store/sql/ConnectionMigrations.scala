@@ -1,23 +1,15 @@
 package kots.oauth2.store.sql
 
-import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
 import java.sql.Connection
 
 import cats.effect.kernel.Resource
 import cats.effect.kernel.Sync
 import cats.syntax.functor._
 
-final case class Migration(version: Int, script: String) {
-  def checksum: String =
-    MessageDigest
-      .getInstance("SHA-256")
-      .digest(script.getBytes(StandardCharsets.UTF_8))
-      .map(byte => f"$byte%02x")
-      .mkString
-}
-
-final class Migrations[F[_]: Sync] private (connect: F[Connection], steps: List[Migration]) {
+private[oauth2] final class ConnectionMigrations[F[_]: Sync] private (
+    connect: F[Connection],
+    steps: List[Migration]
+) {
 
   def version: F[Int] = session { connection =>
     ensure(connection)
@@ -104,12 +96,15 @@ final class Migrations[F[_]: Sync] private (connect: F[Connection], steps: List[
       .use(connection => Sync[F].blocking(use(connection)))
 }
 
-object Migrations {
+private[oauth2] object ConnectionMigrations {
 
-  def of[F[_]: Sync](connect: F[Connection], steps: List[Migration]): Either[String, Migrations[F]] =
+  def of[F[_]: Sync](
+      connect: F[Connection],
+      steps: List[Migration]
+  ): Either[String, ConnectionMigrations[F]] =
     Either.cond(
       steps.map(_.version) == (1 to steps.size).toList,
-      new Migrations(connect, steps),
+      new ConnectionMigrations(connect, steps),
       "migrations must be numbered contiguously from one"
     )
 }

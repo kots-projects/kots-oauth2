@@ -179,7 +179,7 @@ object SqlDeviceStore {
       connect: F[Connection],
       clock: Clock[F]
   ): Either[String, F[SqlDeviceStore[F]]] =
-    Migrations
+    ConnectionMigrations
       .of(connect, Schema.migrations)
       .map(engine =>
         engine.apply.flatMap {

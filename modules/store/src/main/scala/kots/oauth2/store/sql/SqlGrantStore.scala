@@ -71,7 +71,7 @@ final class SqlGrantStore[F[_]: Sync] private (connect: F[Connection])
 object SqlGrantStore {
 
   def create[F[_]: Sync](connect: F[Connection]): Either[String, F[SqlGrantStore[F]]] =
-    Migrations
+    ConnectionMigrations
       .of(connect, Schema.migrations)
       .map(engine =>
         engine.apply.flatMap {
