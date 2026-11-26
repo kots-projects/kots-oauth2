@@ -111,7 +111,7 @@ lazy val client = module("client")
   )
 
 lazy val host = module("host")
-  .dependsOn(server, client, jose % "test->test")
+  .dependsOn(server, client, jose % "test->test", store % "test->test")
   .settings(
     Compile / run / mainClass := Some("kots.oauth2.host.DevServer"),
     assembly / mainClass := Some("kots.oauth2.host.DevServer"),
@@ -127,9 +127,10 @@ lazy val host = module("host")
       "com.softwaremill.sttp.tapir" %% "tapir-http4s-server" % Tapir,
       "org.http4s" %% "http4s-ember-server" % Http4s,
       "org.http4s" %% "http4s-ember-client" % Http4s,
+      "io.github.kots-projects.data" %% "kots-data-net" % Data,
+      "io.github.kots-projects.data" %% "kots-data-pg" % Data,
       "org.typelevel" %% "cats-effect-testkit" % "3.6.0" % Test,
-      "io.circe" %% "circe-parser" % Circe % Test,
-      "com.h2database" % "h2" % "2.3.232" % Test
+      "io.circe" %% "circe-parser" % Circe % Test
     )
   )
 
