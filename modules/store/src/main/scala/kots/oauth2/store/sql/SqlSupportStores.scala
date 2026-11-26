@@ -12,73 +12,11 @@ import kots.oauth2.core.Clock
 import kots.oauth2.core.GrantId
 import kots.oauth2.core.GrantType
 import kots.oauth2.core.RequestUri
-import kots.oauth2.core.Scopes
 import kots.oauth2.core.Subject
-import kots.oauth2.core.Wire
 import kots.oauth2.store.AuditEvent
 import kots.oauth2.store.AuditLog
-import kots.oauth2.store.ConsentRecord
-import kots.oauth2.store.ConsentStore
 import kots.oauth2.store.PushedRequest
 import kots.oauth2.store.PushedRequestStore
-
-final class SqlConsentStore[F[_]: Sync] private (connect: F[Connection])
-    extends SqlSessions[F](connect)
-    with ConsentStore[F] {
-
-  def grant(record: ConsentRecord): F[Unit] = session { connection =>
-    withTransaction(connection) {
-      val merged = existing(connection, record.clientId, record.subject)
-        .fold(record.scopes)(granted => Scopes.union(granted, record.scopes))
-      execute(
-        connection,
-        "DELETE FROM consents WHERE client_id = ? AND subject = ?",
-        record.clientId.value,
-        record.subject.value
-      )
-      execute(
-        connection,
-        "INSERT INTO consents(client_id, subject, scopes) VALUES(?, ?, ?)",
-        record.clientId.value,
-        record.subject.value,
-        Wire[Scopes].encode(merged)
-      )
-      ()
-    }
-  }
-
-  def revoke(clientId: ClientId, subject: Subject): F[Unit] = session { connection =>
-    execute(
-      connection,
-      "DELETE FROM consents WHERE client_id = ? AND subject = ?",
-      clientId.value,
-      subject.value
-    )
-    ()
-  }
-
-  def decide(clientId: ClientId, subject: Subject, scopes: Scopes): F[Boolean] = session { connection =>
-    existing(connection, clientId, subject).exists(allowed => Scopes.isSubsetOf(scopes, allowed))
-  }
-
-  private def existing(connection: Connection, clientId: ClientId, subject: Subject): Option[Scopes] = {
-    val select = connection.prepareStatement(
-      "SELECT scopes FROM consents WHERE client_id = ? AND subject = ?"
-    )
-    try {
-      select.setString(1, clientId.value)
-      select.setString(2, subject.value)
-      val results = select.executeQuery()
-      if (results.next()) Some(DetailRows.required(Wire[Scopes].decode(results.getString(1)))) else None
-    } finally select.close()
-  }
-}
-
-object SqlConsentStore {
-
-  def create[F[_]: Sync](connect: F[Connection]): Either[String, F[SqlConsentStore[F]]] =
-    SqlSupportStores.bootstrapped(connect, new SqlConsentStore(connect))
-}
 
 final class SqlPushedRequestStore[F[_]: Sync] private (connect: F[Connection], clock: Clock[F])
     extends SqlSessions[F](connect)

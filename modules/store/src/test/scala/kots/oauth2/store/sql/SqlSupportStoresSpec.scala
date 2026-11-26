@@ -13,10 +13,8 @@ import kots.oauth2.core.GrantId
 import kots.oauth2.core.GrantType
 import kots.oauth2.core.ParseFailure
 import kots.oauth2.core.RequestUri
-import kots.oauth2.core.Scopes
 import kots.oauth2.core.Subject
 import kots.oauth2.store.AuditEvent
-import kots.oauth2.store.ConsentRecord
 import kots.oauth2.store.PushedRequest
 import munit.CatsEffectSuite
 
@@ -44,24 +42,6 @@ class SqlSupportStoresSpec extends CatsEffectSuite {
   override def beforeEach(context: BeforeEach): Unit = {
     databases.incrementAndGet()
     ()
-  }
-
-  test("consents union across grants and decide by subset") {
-    for {
-      store <- SqlConsentStore.create[IO](connect).toOption.get
-      _ <- store.grant(ConsentRecord(clientId, subject, unsafe(Scopes.parse("read"))))
-      _ <- store.grant(ConsentRecord(clientId, subject, unsafe(Scopes.parse("write"))))
-      allowed <- store.decide(clientId, subject, unsafe(Scopes.parse("read write")))
-      denied <- store.decide(clientId, subject, unsafe(Scopes.parse("admin")))
-      foreign <- store.decide(unsafe(ClientId.from("client-2")), subject, unsafe(Scopes.parse("read")))
-      _ <- store.revoke(clientId, subject)
-      revoked <- store.decide(clientId, subject, unsafe(Scopes.parse("read")))
-    } yield {
-      assertEquals(allowed, true)
-      assertEquals(denied, false)
-      assertEquals(foreign, false)
-      assertEquals(revoked, false)
-    }
   }
 
   test("a pushed request is consumed once and never after its lifetime") {
