@@ -52,9 +52,7 @@ final class Migrations[F[_]] private (database: Database[F], steps: List[Migrati
 
   private def record(step: Migration): F[Unit] =
     database.transaction.use { transaction =>
-      step.script.split(';').toList.map(_.trim).filter(_.nonEmpty).traverse_ { text =>
-        transaction.execute(Fragment.sql(text))
-      } *> transaction
+      transaction.script(step.script) *> transaction
         .execute(
           sql"INSERT INTO schema_version(version, checksum, applied_at) VALUES(${param(step.version)}, ${param(step.checksum)}, CURRENT_TIMESTAMP)"
         )

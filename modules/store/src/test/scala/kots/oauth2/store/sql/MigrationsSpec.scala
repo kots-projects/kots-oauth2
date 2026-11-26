@@ -2,6 +2,7 @@ package kots.oauth2.store.sql
 
 import cats.effect.IO
 import kots.data.Database
+import kots.data.Fragment
 import munit.CatsEffectSuite
 
 abstract class MigrationsSpec(backend: Backend) extends CatsEffectSuite {
@@ -75,6 +76,19 @@ abstract class MigrationsSpec(backend: Backend) extends CatsEffectSuite {
         assert(applied.isLeft)
         assertEquals(version, 1)
         assertEquals(verified, Right(1))
+      }
+    }
+  }
+
+  test("a semicolon inside a literal does not end a statement") {
+    backend.database.use { database =>
+      val marked = Migration(1, "CREATE TABLE marks(mark VARCHAR(8)); INSERT INTO marks(mark) VALUES('a;b')")
+      for {
+        applied <- engine(database, List(marked)).apply
+        marks <- database.session.use(_.query[String](Fragment.sql("SELECT mark FROM marks")))
+      } yield {
+        assertEquals(applied, Right(1))
+        assertEquals(marks, List("a;b"))
       }
     }
   }
