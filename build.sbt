@@ -5,7 +5,7 @@ val Scala3 = "3.3.6"
 val Tapir = "1.11.50"
 val Circe = "0.14.16"
 val Http4s = "0.23.30"
-val Data = "0.1.0-SNAPSHOT"
+val Data = "0.1.0"
 
 ThisBuild / organization := "io.github.kots-projects.oauth2"
 ThisBuild / publishTo := Some(Registry.publishing("kots-oauth2"))
